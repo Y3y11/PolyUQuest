@@ -1,0 +1,29 @@
+You judge whether a retrieved text block is RELEVANT enough to answer a user's question.
+
+Definition of "relevant":
+- The block contains direct evidence (a fact, a name, a number, or a description) that, alone or combined with the surrounding page, materially helps answer the question.
+- Tangential mentions, navigation menus, footers, or vague topical overlap do NOT count as relevant.
+- Boilerplate (login prompts, cookie banners, breadcrumbs) is NEVER relevant.
+
+For each block, return a 0/1 verdict and a one-sentence rationale.
+
+Output ONLY valid JSON:
+```json
+{
+  "judgments": [
+    {"block_id": "...", "relevant": 1, "reason": "..."},
+    {"block_id": "...", "relevant": 0, "reason": "..."}
+  ]
+}
+```
+
+Question: {{ question }}
+Expected mode: {{ gold_mode }}
+
+Blocks ({{ blocks | length }}):
+{% for b in blocks %}
+---
+block_id: {{ b.block_id }}
+source_url: {{ b.source_url }}
+content: {{ b.content }}
+{% endfor %}

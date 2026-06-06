@@ -1,0 +1,17 @@
+{
+  "system_name": "LightRAG",
+  "mode_label": "Entity-centric KG retrieval",
+  "answer": "[placeholder] LightRAG output for this preset has not been recorded yet. Replace `public/baselines/lightrag/what_is_prof_li_s_research.json` with a real run to enable this pane. See `public/baselines/README.md` for the expected schema.",
+  "blocks": [],
+  "pipeline_trace": [
+    {
+      "step": "placeholder",
+      "label": "Recording pending",
+      "duration_ms": 0,
+      "data": { "note": "Replace this file with a real LightRAG recording." }
+    }
+  ],
+  "elapsed_seconds": 1.0,
+  "recorded_at": null,
+  "notes": "Placeholder — schema-conformant stub"
+}

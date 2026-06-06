@@ -1,0 +1,132 @@
+departments:
+  # ── Faculty of Engineering ─────────────────────────────────────
+  "Department of Computing":
+    - COMP
+    - Dept of Computing
+    - PolyU COMP
+    - "Department of Computing, PolyU"
+    - 计算学系
+  "Department of Civil and Environmental Engineering":
+    - CEE
+    - Civil and Environmental Engineering
+  "Department of Industrial and Systems Engineering":
+    - ISE
+    - Industrial and Systems Engineering
+  "Department of Mechanical Engineering":
+    - ME
+    - Mechanical Engineering
+  "Department of Biomedical Engineering":
+    - BME
+    - Biomedical Engineering
+  "Department of Electrical and Electronic Engineering":
+    - EEE
+    - Electrical and Electronic Engineering
+  "Department of Aeronautical and Aviation Engineering":
+    - AAE
+    - Aeronautical and Aviation Engineering
+  "Department of Land Surveying and Geo-Informatics":
+    - LSGI
+    - Land Surveying and Geo-Informatics
+  "Department of Building and Real Estate":
+    - BRE
+    - Building and Real Estate
+
+  # ── Faculty of Health & Social Sciences / Humanities ───────────
+  "Department of Applied Biology and Chemical Technology":
+    - ABCT
+    - Applied Biology and Chemical Technology
+  "Department of Applied Mathematics":
+    - AMA
+    - Applied Mathematics
+  "Department of Applied Social Sciences":
+    - APSS
+    - Applied Social Sciences
+  "Department of Rehabilitation Sciences":
+    - RS
+    - Rehabilitation Sciences
+  "Department of Health Technology and Informatics":
+    - HTI
+    - Health Technology and Informatics
+  "Department of Chinese History and Culture":
+    - CHC
+    - Chinese History and Culture
+    - 中國歷史及文化學系
+  "Department of Language Science and Technology":
+    - LST
+    - Language Science and Technology
+  "School of Nursing":
+    - SN
+    - PolyU Nursing
+  "School of Optometry":
+    - SO
+    - Optometry
+
+  # ── Faculty of Business ────────────────────────────────────────
+  "School of Accounting and Finance":
+    - AF
+    - Accounting and Finance
+  "Department of Management and Marketing":
+    - MM
+    - Management and Marketing
+  "Department of Logistics and Maritime Studies":
+    - LMS
+    - Logistics and Maritime Studies
+
+  # ── Other schools ──────────────────────────────────────────────
+  "School of Design":
+    - SD
+    - PolyU Design
+  "School of Fashion and Textiles":
+    - SFT
+    - Fashion and Textiles
+  "School of Hotel and Tourism Management":
+    - SHTM
+    - Hotel and Tourism Management
+
+  # ── Faculties (higher level) ──────────────────────────────────
+  "Faculty of Humanities":
+    - FH
+    - PolyU Humanities
+  "Faculty of Business":
+    - FB
+    - PolyU Faculty of Business
+
+offices:
+  "Academic Registry":
+    - AR
+  "Student Affairs Office":
+    - SAO
+  "Culture Promotion and Events Office":
+    - CPEO
+  "Knowledge Transfer and Entrepreneurship Office":
+    - KTEO
+  "Information Technology Services Office":
+    - ITS
+    - IT Services Office
+  "Communications and Public Affairs Office":
+    - CPA
+  "Research and Innovation Office":
+    - RIO
+  "Human Resources Office":
+    - HRO
+  "Graduate School":
+    - GS
+    - PolyU Graduate School
+  "PolyU Academy for Interdisciplinary Research":
+    - PAIR
+
+programmes:
+  "MSc in Data Science and Analytics":
+    - MScDSA
+    - MSc DSA
+    - Data Science and Analytics
+  "MSc in Information Technology":
+    - MScIT
+    - MSc IT
+    - Information Technology
+  "BSc (Hons) in Computing":
+    - BScCOMP
+
+courses: {}
+# Will be populated semi-automatically from course catalogue crawl
+# e.g. COMP5423: "Natural Language Processing"

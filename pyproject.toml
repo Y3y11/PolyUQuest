@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-rag-polyu"
+version = "0.1.0"
+description = "Structure-aware Graph-enhanced RAG system for university websites"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "selectolax>=0.3",
+    "playwright>=1.48",
+    "neo4j>=5.25",
+    "qdrant-client>=1.12",
+    "sentence-transformers>=3.3",
+    "FlagEmbedding>=1.2",
+    "openai>=1.55",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "json-repair>=0.30",
+    "rapidfuzz>=3.10",
+    "tiktoken>=0.8",
+    "python-dotenv>=1.0",
+    "structlog>=24.4",
+    "rich>=13.9",
+    "click>=8.1",
+    "firecrawl-py>=1.15",
+    "rank-bm25>=0.2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+]
+
+[project.scripts]
+agent-rag-serve = "agent_rag.api.main:start"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_rag"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

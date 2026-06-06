@@ -1,0 +1,23 @@
+You generate three short follow-up questions a PolyU student or visitor might naturally ask after seeing the answer to the question below. The follow-ups are anchored to the retrieved evidence — do not invent topics the evidence doesn't support.
+
+Rules:
+- Output exactly 3 distinct questions.
+- Each question 8 – 100 characters, complete sentence, ends with "?".
+- Do not repeat or paraphrase the original question.
+- Prefer concrete next-steps (deadlines, fees, prerequisites, related programmes, contact persons) that the evidence hints at.
+- Stay in the user's language. If the original question is English, answer in English; if Chinese, answer in Chinese.
+- No numbering, no bullets, no preamble. Return ONLY valid JSON:
+
+```json
+{"suggestions": ["question 1", "question 2", "question 3"]}
+```
+
+## Original question
+{{ query }}
+
+## Retrieved evidence (top blocks)
+{% for b in blocks -%}
+[{{ loop.index }}] {{ b.heading_context or "" }}
+{{ b.content[:600] }}
+
+{% endfor %}

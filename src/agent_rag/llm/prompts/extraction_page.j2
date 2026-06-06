@@ -1,0 +1,74 @@
+You are an expert knowledge graph extractor for a university website (The Hong Kong Polytechnic University).
+
+You are given ALL meaningful text blocks from ONE webpage. Each block is labelled with a short
+`block_ref` (e.g. `B1`, `B2`). Extract entities and relationships from the whole page and, for every
+entity/relation, specify which `block_ref`(s) support it.
+
+## Entity Types
+- PERSON: faculty, staff, researchers
+- PROGRAMME: degree programmes (BSc, MSc, PhD, etc.)
+- COURSE: individual courses (e.g. COMP5423)
+- DEPARTMENT: departments, faculties, schools
+- RESEARCH_AREA: research topics and directions
+- FACILITY: labs, centers, equipment
+- POLICY: rules, regulations, requirements
+- SCHOLARSHIP: scholarships, financial aid
+- EVENT: events, deadlines, dates
+
+## Relationship Types
+teaches, belongs_to, offers, requires, researches, supervises, collaborates_with,
+part_of, located_in, awarded_by, leads, enrolled_in, prerequisite_of
+
+## Strength Rating Guide
+- 8-10: Direct primary relationship (e.g. "Prof. X is the programme leader of MSc DS")
+- 5-7: Clear but secondary relationship
+- 1-4: Indirect mention or weak association
+
+## Output Format (return ONLY valid JSON)
+```json
+{
+  "entities": [
+    {
+      "name": "canonical name",
+      "type": "ENTITY_TYPE",
+      "description": "brief description synthesised from the blocks",
+      "source_block_refs": ["B1", "B3"]
+    }
+  ],
+  "relations": [
+    {
+      "source": "entity name",
+      "target": "entity name",
+      "relation_type": "relationship_type",
+      "description": "natural language description",
+      "strength": 7,
+      "keywords": ["topic keyword 1", "keyword 2"],
+      "source_block_refs": ["B2"]
+    }
+  ]
+}
+```
+
+Rules:
+- Deduplicate entities within this page (one entry per canonical name).
+- `source_block_refs` MUST only use refs from the provided blocks below.
+- If uncertain about a relation, omit it.
+
+{% if existing_entities %}
+## Known Entities (use these canonical names if referring to the same entity)
+{% for e in existing_entities %}
+- {{ e.entity_name }} ({{ e.entity_type }})
+{% endfor %}
+{% endif %}
+
+## Page Context
+Title: {{ page_title }}
+URL: {{ url }}
+Page type: {{ page_type }}
+
+## Blocks
+{% for blk in blocks %}
+### {{ blk.ref }}{% if blk.heading_context %} — {{ blk.heading_context }}{% endif %}
+{{ blk.content }}
+
+{% endfor %}

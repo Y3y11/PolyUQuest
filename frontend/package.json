@@ -1,0 +1,42 @@
+{
+  "name": "agent-rag-polyu-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "clsx": "^2.1",
+    "cytoscape": "^3.30",
+    "cytoscape-cola": "^2.5",
+    "cytoscape-svg": "^0.4.0",
+    "framer-motion": "^11.11",
+    "lucide-react": "^0.460",
+    "next": "^14.2",
+    "react": "^18.3",
+    "react-dom": "^18.3",
+    "react-markdown": "^9.0",
+    "remark-gfm": "^4.0",
+    "zustand": "^5.0.13"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22",
+    "@types/react": "^18.3",
+    "@types/react-dom": "^18.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.4",
+    "jsdom": "^29.0.2",
+    "postcss": "^8.4",
+    "tailwindcss": "^3.4",
+    "typescript": "^5.6",
+    "vitest": "^4.1.4"
+  }
+}

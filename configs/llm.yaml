@@ -1,0 +1,85 @@
+providers:
+  deepseek:
+    model: deepseek-chat
+    temperature: 0.1
+    max_tokens: 4096
+
+  qwen:
+    model: qwen-max
+    temperature: 0.1
+    max_tokens: 4096
+
+  siliconflow:
+    model: Pro/deepseek-ai/DeepSeek-V3
+    temperature: 0.1
+    max_tokens: 4096
+
+default_provider: siliconflow
+
+extraction:
+  # Stage-level model override. Routing / answer generation continue to use
+  # the default provider model (Pro/deepseek-ai/DeepSeek-V3); only entity /
+  # relation extraction switches to a faster model. Extraction is the most
+  # expensive stage by wall-clock time, and V4-Flash returns ~3-5x faster on
+  # similar prompts while still producing well-formed JSON. Leave model
+  # unset to fall back to the provider default.
+  # V4-Flash returned 500/503 on SiliconFlow during 2026-04-26 smoke. V3.2
+  # (non-Pro) tested at ~23s with 6 entities / 5 relations on the same prompt
+  # — best speed/quality trade-off we found. Pro/V3 (the default) is ~70s
+  # per call due to Pro-tier queueing. Revisit if V4-Flash stabilizes.
+  model: deepseek-ai/DeepSeek-V3.2
+  temperature: 0.0
+  max_retries: 2
+
+generation:
+  # Final answer stage (the user-facing reply rendered from generate_answer.j2).
+  # Was on DeepSeek-V4-Flash (2026-04-28 pick for better long-form Chinese/EN
+  # over Pro/V3), but V4-Flash averaged 60-90s/call which dominated trusted-25
+  # e2e latency. Unified to DeepSeek-V3.2 on 2026-05-15 — same model already
+  # proven on extraction (~23s/call, well-formed output), keeps eval + LightRAG
+  # baseline on a single fast model. Leave unset to fall back to provider default.
+  model: deepseek-ai/DeepSeek-V3.2
+  temperature: 0.3
+  # 2026-06-02: raised 2048→4096. List-style queries ("有哪些 research
+  # assistant professor") enumerate dozens of entities and were truncated
+  # mid-list at the 2048 output cap. 4096 matches the provider ceiling
+  # (see providers.*.max_tokens above). All answer-generation call sites
+  # now read this value via _GENERATION_MAX_TOKENS instead of hardcoding it.
+  max_tokens: 4096
+
+resolution:
+  # Stage4 entity-judge runs ~1500-3000 calls per build with tiny prompts
+  # (~75 in / ~30 out). Pro/V3 averages ~7s/call (queue-bound), V3.2 ~3.3s,
+  # but inclusionAI/Ling-flash-2.0 averaged 1.29s in 2026-04-27 smoke (3/3
+  # consistent answers, well-formed JSON) — the cheapest 5x speedup we found.
+  # Falls back to provider default if unset.
+  model: inclusionAI/Ling-flash-2.0
+  temperature: 0.0
+
+routing:
+  temperature: 0.0
+  max_tokens: 256
+
+rewrite:
+  # Query rewriter (retrieval/_rewriter.py): a tiny task — read one query,
+  # emit ≤3 multilingual paraphrases as JSON. Was using `generation`'s
+  # DeepSeek-V4-Flash (60-90s/cold call) which dominated trusted-25 e2e
+  # latency (19.9s → 254.7s). Ling-flash-2.0 already proven on the
+  # resolution stage at ~1.3s/call with clean JSON — same shape (small
+  # in/out, deterministic), no reason it shouldn't fit here.
+  model: inclusionAI/Ling-flash-2.0
+  temperature: 0.0
+  max_tokens: 256
+
+reranker:
+  # Phase 1 second-stage cross-encoder. SiliconFlow exposes a Cohere-compatible
+  # /v1/rerank endpoint; same credentials as the embedding/LLM stages.
+  # Switched from BAAI/bge-reranker-v2-m3 to Qwen3-Reranker-8B on 2026-05-12
+  # after trusted-25 A/B across bge-v2-m3 / qwen3-0.6B / qwen3-4B / qwen3-8B:
+  # 8B ties on recall@5 (0.513) and wins +11.3pp on recall@3 (0.380→0.493) at
+  # -16% latency. See audit doc 三层图构建审计_20260511.md for full table.
+  # Override per-run with RERANKER_MODEL env var (read by _reranker.py).
+  model: Qwen/Qwen3-Reranker-8B
+  provider: siliconflow
+  timeout_seconds: 30.0
+  max_retries: 2

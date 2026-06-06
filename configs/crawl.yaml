@@ -1,0 +1,240 @@
+# ── Fetcher backend ────────────────────────────────────────────────
+# httpx             — fast, no JS rendering (original)
+# firecrawl-scrape  — our BFS + Firecrawl per-page (JS rendered)
+# firecrawl-crawl   — server-side crawl (recommended, fastest)
+# firecrawl-map     — URL discovery only (no content)
+fetcher: firecrawl-crawl
+
+seed_urls:
+  # 站点根 — Firecrawl 从根做 BFS，覆盖 /media, /study, /about-polyu, /research 等站级板块
+  - https://www.polyu.edu.hk/
+
+  # ── 院系根 (Schools / Departments) ────────────────────────────────
+  # Firecrawl /map 对院系子站覆盖极浅（大多只有首页），因此显式列为独立 seed
+  # 让 firecrawl-crawl 从每个根做 BFS，深入到 people / programme / research 子页
+  - https://www.polyu.edu.hk/fcms/      # Faculty of Computer and Mathematical Sciences
+  - https://www.polyu.edu.hk/comp/      # Department of Computing
+  - https://www.polyu.edu.hk/dsai/      # Department of Data Science & AI
+  - https://www.polyu.edu.hk/ama/       # Department of Applied Mathematics
+  - https://www.polyu.edu.hk/fce/       # Faculty of Construction and Environment
+  - https://www.polyu.edu.hk/beee/      # Department of Building Environment and Energy Engineering
+  - https://www.polyu.edu.hk/bre/       # Department of Building & Real Estate
+  - https://www.polyu.edu.hk/cee/       # Department of Civil & Environmental Engineering、
+  - https://www.polyu.edu.hk/lsgi/      # Department of Land Surveying and Geo-Informatics
+  - https://www.polyu.edu.hk/fb/        # Faculty of Business
+  - https://www.polyu.edu.hk/lms/       # Department of Logistics & Maritime Studies
+  - https://www.polyu.edu.hk/mm/        # Department of Management & Marketing
+  - https://www.polyu.edu.hk/af/        # Department of School of Accounting and Finance
+  - https://www.polyu.edu.hk/feng/      # Faculty of Engineering
+  - https://www.polyu.edu.hk/bme/       # Department of Biomedical Engineering
+  - https://www.polyu.edu.hk/eee/       # Department of Electrical and Electronic Engineering
+  - https://www.polyu.edu.hk/aae/       # Department of Aeronautical and Aviation Engineering
+  - https://www.polyu.edu.hk/ise/       # Department of Industrial and Systems Engineering
+  - https://www.polyu.edu.hk/me/        # Department of Mechanical Engineering
+  - https://www.polyu.edu.hk/fhss/      # Faculty of Health and Social Sciences
+  - https://www.polyu.edu.hk/apss/      # Department of Applied Social Sciences
+  - https://www.polyu.edu.hk/hti/       # Department of Health Technology and Informatics
+  - https://www.polyu.edu.hk/rs/        # Department of Rehabilitation Sciences
+  - https://www.polyu.edu.hk/sn/        # School of Nursing
+  - https://www.polyu.edu.hk/so/        # School of Optometry
+  - https://www.polyu.edu.hk/en/fh/     # Faculty of Humanities
+  - https://www.polyu.edu.hk/chc/       # Department of Chinese History and Culture
+  - https://www.polyu.edu.hk/engl/      # Department of English and Communication
+  - https://www.polyu.edu.hk/lst/       # Department of Language Science and Technology
+  - https://www.polyu.edu.hk/fs/        # Faculty of Science
+  - https://www.polyu.edu.hk/abct/      # Department of Applied Biology and Chemical Technology
+  - https://www.polyu.edu.hk/ap/        # Department of Applied Physics
+  - https://www.polyu.edu.hk/fsn/       # Department of Food Science and Nutrition
+  - https://www.polyu.edu.hk/sd/        # School of Design
+  - https://www.polyu.edu.hk/sft/       # School of Fashion and Textiles
+  - https://www.polyu.edu.hk/shtm/      # School of Hotel and Tourism Management
+  - https://www.polyu.edu.hk/gs/        # Graduate School
+  - https://www.polyu.edu.hk/cus/       # College of Undergraduate Studies
+
+
+domain_whitelist:
+  - "*.polyu.edu.hk"
+
+domain_exceptions: []
+
+max_depth: 4
+max_pages: 500
+crawl_delay_seconds: 1.0
+user_agent: "AgentRAG-PolyU/0.1 (research project)"
+
+# ── Firecrawl-specific options ─────────────────────────────────────
+firecrawl:
+  # Per-seed page cap (prevents the first large seed from eating the whole
+  # max_pages budget across 30+ seeds).  Set to null/omit for shared budget.
+  per_seed_limit: 300
+
+  # Poll cadence & per-seed timeout for the async crawl job.  Each seed's
+  # Firecrawl job is bounded by max_wait_seconds; on timeout the server-side
+  # job is cancelled and partial results are kept.
+  poll_interval: 10
+  max_wait_seconds: 1800
+
+  # Per-page scrape safety limits used by firecrawl-scrape, extend-crawl,
+  # and priority backfill.  The SDK HTTP timeout prevents a local Python
+  # process from hanging forever; scrape_timeout_ms bounds Firecrawl's remote
+  # browser/rendering work for a single URL.
+  request_timeout_seconds: 90
+  scrape_timeout_ms: 60000
+
+  # Server-side path exclusions (regex).  These cut noisy URLs before
+  # Firecrawl bills credits.  Keep aligned with url_filter below so the
+  # client-side filter is a belt-and-suspenders for what slips through.
+  exclude_paths:
+    - "^/tc/"
+    - "^/sc/"
+    - "^/login(/|$)"
+    - "^/cpa/souvenirs(/|$)"
+    - "^/media/media-releases/(2019|2020|2021|2022|2023)/"
+    - "^/en/media/media-releases/(2019|2020|2021|2022|2023)/"
+    - "^/events/(2019|2020|2021|2022|2023)/"
+    - "^/en/events/(2019|2020|2021|2022|2023)/"
+    - "^/[^/]+/news-and-events/.*(2019|2020|2021|2022|2023)"
+    - "^/[^/]+/latest-news/.*(2019|2020|2021|2022|2023)"
+    - "^/publications/[^/]+/issue/(2019|2020|2021|2022|2023)"
+    - "^/study/pg/research-postgraduate/(2019|2020|2021|2022|2023)/"
+    - "^/[^/]+/study/.*(2019|2020|2021|2022|2023)-entry"
+    - "^/study/.*(2019|2020|2021|2022|2023)-entry"
+    - "\\.(pdf|docx?|xlsx?|pptx?|zip|jpe?g|png|gif|mp4)$"
+
+# ── Jina Reader options (fetcher: jina) ─────────────────────────────
+# Frontier-driven fallback for when Firecrawl quota runs out.  The crawler
+# reads URLs from data/frontier.jsonl (built by scripts/build_frontier.py)
+# and persists progress to data/jina_progress.json so it can be resumed.
+jina:
+  # Concurrent in-flight requests.  Jina free tier ≈ 20 RPM; paid keys
+  # support much higher throughput.  Start at 1 if rate-limited.
+  concurrency: 4
+
+  # Per-request HTTP timeout.  Jina renders heavy pages server-side so
+  # 90s is a safe default.
+  request_timeout_seconds: 90
+
+  # Retry policy for transient failures (5xx, timeouts, 429).  4xx other
+  # than 408/429 are not retried.
+  max_retries: 2
+  retry_backoff_seconds: 5.0
+
+  # Drop pages whose returned HTML is shorter than this (likely error
+  # placeholders or empty SPAs that didn't hydrate).
+  min_html_size: 200
+
+  # X-Engine header.  Options:
+  #   default       — Jina's auto choice (fast, no JS for static pages)
+  #   browser       — full headless Chrome (use for SPAs, slower)
+  #   direct        — bypass cache, force fresh fetch
+  # Leave empty/null to omit the header.
+  engine: "browser"
+
+  # If true, ask Jina to append a links summary to the response.  We
+  # already extract links from HTML, so this is normally off.
+  with_links_summary: false
+
+  # Progress checkpoint.  Written every flush_every URLs (default 10) and
+  # at shutdown.  On restart, URLs marked processed/skipped/failed are
+  # skipped automatically — making jina mode fully resumable.
+  progress_path: "data/jina_progress.json"
+  failure_log_path: "data/jina_failures.jsonl"
+  flush_every: 10
+
+  # If true, retry URLs that are recorded in jina_failures.jsonl on next
+  # run instead of skipping them.  Useful after fixing rate-limit issues.
+  retry_failed_on_resume: false
+
+# ── URL-level filter (applied client-side in crawler.py) ──────────
+# Rules derived from the www.polyu.edu.hk site-map analysis:
+# 4997 URLs → 881 after filtering (82% reduction, mostly tc/sc mirrors
+# + pre-2024 news/events).
+url_filter:
+  enabled: true
+  min_year: 2024
+  # Safety net: drop any URL whose path contains an isolated year before
+  # min_year, e.g. /en/activities/...-icbl-2020/.  This is intentionally
+  # broader than dated_path_patterns and should be kept aligned with the
+  # project's 2024+ crawl scope.
+  drop_years_before_min_anywhere: true
+  drop_language_prefixes: ["tc", "sc"]
+  drop_extensions: [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt",
+                    ".pptx", ".zip", ".jpg", ".jpeg", ".png", ".gif", ".mp4"]
+  drop_host_suffixes:
+    - "lib.polyu.edu.hk"
+    - "lb.polyu.edu.hk"
+    - "idportal.polyu.edu.hk"
+    - "ezproxy.lb.polyu.edu.hk"
+  drop_path_prefixes:
+    - "/login"
+    - "/cpa/souvenirs"
+    - "/en/alumni/connect/opaa"
+    - "/alumni/connect/opaa"
+  drop_host_path_prefixes:
+    - { host_suffix: "research.polyu.edu.hk", path_prefix: "/en/clippings" }
+  drop_exact_paths:
+    - "/notfound.html"
+    - "/sitemap"
+    - "/accessibility"
+    - "/terms-of-use"
+    - "/privacy-policy-statement"
+    - "/photo-gallery"
+    - "/atoz"
+    - "/about-polyu/photo-gallery"
+    - "/social-media"
+  dated_path_patterns:
+    - { regex: '^/media/media-releases/(\d{4})/', group: 1 }
+    - { regex: '^/en/media/media-releases/(\d{4})/', group: 1 }
+    - { regex: '^/events/(\d{4})/', group: 1 }
+    - { regex: '^/en/events/(\d{4})/', group: 1 }
+    - { regex: '^/recent-focus/(\d{4})\d{4}', group: 1 }
+    - { regex: '^/[^/]+/news-and-events/.*?(\d{4})', group: 1 }
+    - { regex: '^/[^/]+/latest-news/.*?(\d{4})', group: 1 }
+    - { regex: '^/publications/[^/]+/issue/(\d{4})', group: 1 }
+    - { regex: '^/study/pg/research-postgraduate/(\d{4})/', group: 1 }
+    - { regex: '^/[^/]+/study/.*?(\d{4})-entry', group: 1 }
+    - { regex: '^/study/.*?(\d{4})-entry', group: 1 }
+
+# ── Programme subpage crawl ─────────────────────────────────────────
+# Ensure programme detail tabs (entrance-requirements, curriculum, etc.)
+# are crawled even when the page budget is tight.  The crawler will
+# discover these as outgoing links from intro pages and crawl them
+# as long as they fall within max_depth and max_pages.
+priority_url_patterns:
+  - "/study/.*/entrance-requirements"
+  - "/study/.*/curriculum"
+  - "/study/.*/subjects"
+  - "/study/.*/faq"
+  - "/study/.*/programme-features"
+
+# ── Page classification ────────────────────────────────────────────
+priority_pages:
+  - staff-list
+  - programme-list
+  - course-catalogue
+
+page_type_rules:
+  staff-list:
+    url_patterns:
+      - "/people/academic-staff"
+      - "/people/academic-teaching-staff"
+  personal-homepage:
+    url_patterns:
+      - "/people/academic-staff/"
+  programme:
+    url_patterns:
+      - "/study/"
+      - "/programme/"
+  course:
+    url_patterns:
+      - "/course/"
+  admissions:
+    url_patterns:
+      - "/admission"
+  fee:
+    url_patterns:
+      - "/fee"
+      - "/tuition"
+  scholarship:
+    url_patterns:
+      - "/scholarship"

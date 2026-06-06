@@ -1,0 +1,130 @@
+retrieval:
+  # Mode A: max blocks from vector search passed to the LLM (raise for list-style facts).
+  direct_top_k: 10
+  # Phase 1 two-stage retrieval (Plan: jazzy-mixing-mountain).
+  # first_stage_top_k = how many candidates the ANN call pulls (per mode);
+  # final_top_k = how many survive the reranker. reranker_enabled is the
+  # global kill-switch; set false to compare against the no-rerank baseline.
+  first_stage_top_k: 50
+  final_top_k: 10
+  reranker_enabled: true
+  # Score fusion blends cross-encoder rerank score with the first-stage cosine
+  # similarity. α=1.0 = pure rerank (legacy). α=0.7 keeps reranker dominant but
+  # prevents it from completely burying an ANN top-1 candidate (trusted-25
+  # probe showed ~4 misses with gold at ANN rank 1–4 dropping out of top-10).
+  reranker_fusion_alpha: 1.0
+  # Hybrid sparse + dense first-stage. When enabled, mode_a unions Qdrant
+  # dense top-K with BM25 top-bm25_top_k over block (heading + content) text,
+  # then hands the merged pool to the cross-encoder reranker. trusted-25
+  # probe (2026-05-12, probe_bm25_union_pool.py): dense50 alone gold-in-pool
+  # 0.687 → dense50 ∪ bm25_20 = 0.787 (+10pp), bm25_50 same as bm25_20 so
+  # 20 is the sweet spot. Zero regressions across 25 questions in the probe.
+  hybrid_sparse_enabled: true
+  bm25_top_k: 20
+  # Multilingual LLM query rewriter. Generates up to N rewrites
+  # (zh-Hant translation, lexical paraphrase, proper-noun anchor) and fans
+  # each rewrite through dense + BM25 into the same first-stage pool. The
+  # reranker remains the only judge of relevance — rewrite scores are NOT
+  # blended. Targets the residual trusted-25 misses where the literal
+  # English query has zero overlap with the gold passage (zh-only pages,
+  # paraphrase gaps like "recognized for research" → "received RGC fund").
+  # One small LLM call per unique query, SQLite-cached.
+  query_rewrite:
+    enabled: true
+    max_rewrites: 3
+    # Cap dense top-K and BM25 top-K *per rewrite*. Per-rewrite pool stays
+    # narrow so the union doesn't explode the cross-encoder input. The
+    # original query still pulls the full first_stage_top_k.
+    per_rewrite_dense_top_k: 20
+    per_rewrite_bm25_top_k: 10
+    # Adaptive gating: skip the rewriter LLM call when the router is at
+    # least this confident. Rationale (trusted-25, 2026-05-12 by-mode
+    # breakdown): high-conf queries (mode_a single-hop with conf≈1.0)
+    # already find the gold in dense+BM25 pool; rewriter just adds
+    # ~3.5s/q + tokens with no recall lift. Hybrid + low-conf paths
+    # still benefit from multilingual expansion. 0.0 = always rewrite
+    # (legacy behavior); 1.0 = never rewrite.
+    confidence_threshold: 0.7
+  navigation:
+    # 2026-05-16: raised 3→5 after disable_hybrid landed. With hybrid off, mode_b
+    # runs solo on routed queries; the 3 multi_page gold-nowhere questions
+    # (q_multi_page_005/013/014, all gold_mode=mode_b) had gold pages outside
+    # the 3-page slice. holistic_cap = first_stage_top_k = 50, so 5 pages × 10
+    # blocks = 50 candidates exactly saturates the rerank input — no extra
+    # rerank cost. Per-page block slice (top_k_blocks below) is still floored
+    # to 10 by navigation.py:138 when reranker is on.
+    top_k_pages: 5
+    # Effective value on the production rerank path. navigation.py:138 floors
+    # this to max(10, first_stage_top_k // 5) when reranker is on; was 3 in
+    # config but always 10 in practice. Aligned to 10 here so reading the
+    # config matches the code's behavior. To actually narrow the per-page
+    # slice you must edit navigation.py:138.
+    top_k_blocks: 10
+    top_blocks_selection: 10
+  router:
+    hybrid_threshold: 0.75     # confidence below this triggers hybrid (raised 0.6→0.75 after trusted-25 analysis: many borderline queries with conf=0.7 benefit from hybrid)
+    cache_enabled: true        # in-process LRU for LLM classifications
+    cache_maxsize: 512
+    default_llm_confidence: 0.7  # fallback confidence when LLM omits the field
+    # 2026-05-16: hybrid retrieval is structurally a no-op on PolyU dataset_v3.
+    # 43-question diagnostic (scripts/diagnose_hybrid_merge.py, full run): 18/43
+    # (42%) of hybrid-fired questions return A=B=C identical top-5; only 1/43
+    # (q_mixed_ac_011) has gold uniquely surfaced by mode_b; net contribution is
+    # −1 hit@1 (+1 / −2 / 40 unchanged). Root cause: all three sub-modes funnel
+    # into the same Qwen3-Reranker-8B cross-encoder, which collapses their
+    # differentiated candidate pools back to the same top-5. Setting this true
+    # forces alt_mode=None at the router exit, which short-circuits every
+    # downstream `if alt_mode and confidence < threshold` hybrid gate in
+    # evaluate.py and api/routes/query_router.py — single-mode dispatch stays
+    # intact. Flip back to false to re-enable hybrid (e.g., after switching the
+    # merge to RRF or removing the unified rerank stage).
+    disable_hybrid: true
+  hybrid:
+    # v3 diagnostic (2026-05-14): when both sub-modes return ~10 high-scoring
+    # blocks each, capping merge to 10 forces a near-50/50 split — one side's
+    # later gold blocks get pushed out. Raised 10→15 so the merged pool has
+    # room to keep both modes' tails. Cross-encoder reranker still gates the
+    # final top_k seen by the answer LLM, so the additional 5 are essentially
+    # free recall headroom.
+    max_blocks: 15
+
+
+block_tree:
+  max_words: 150
+  min_words: 20
+
+entity_resolution:
+  embedding_weight: 0.7
+  fuzzy_weight: 0.3
+  # Tightened on 2026-04-27: review band [0.85, 0.95) was 0.10 wide and
+  # triggered ~11k stage4 LLM calls on a 4705-page PolyU build (6h+ wall
+  # clock with Ling-flash). Narrowing to [0.90, 0.92) cuts stage4 volume
+  # ~80% with negligible quality loss — pairs at score≥0.92 are already
+  # high-similarity (embedding 0.7w + fuzzy 0.3w means ≥0.92 ≈ near-exact
+  # name match OR strong semantic overlap). Audit merge_log post-build to
+  # validate.
+  auto_merge_threshold: 0.92
+  review_threshold: 0.90
+  surname_bonus_weight: 0.1
+
+scoring:
+  alpha: 0.5        # cosine similarity weight
+  beta: 0.35        # entity coverage weight
+  gamma: 0.15       # length efficiency weight
+  coverage_cap: 5
+  max_tokens: 300
+  # v3 diagnostic (2026-05-14, 75-question set): 5 mixed_ac RETRIEVAL_GAP
+  # failures were all single-page concentrations where the gold answer lived
+  # entirely on one researcher/staff page (6, 2, 2, 2, 1 blocks on a single
+  # URL). cap=3 + discount=0.5 dropped positions 4-6 below top-10 even when
+  # entity coverage was high. Raised cap 3→5 to accommodate dense profile
+  # pages; mode_c still keeps a hard cap so diversity is preserved on
+  # genuinely multi-page entity queries.
+  same_page_cap: 5
+  same_page_discount: 0.5
+  context_budget: 4000
+  top_entity_limit: 30  # max entities retained before block retrieval (beam pruning)
+
+embedding:
+  model: BAAI/bge-m3
+  dimension: 1024

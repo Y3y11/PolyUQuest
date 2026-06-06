@@ -1,0 +1,33 @@
+You judge whether a retrieved text block is RELEVANT to a user's question.
+
+Definition of "relevant" (relaxed — used to surface candidates for human review):
+- The block partially or fully addresses the question, OR mentions the specific entity / programme / person / topic asked about with at least one concrete fact.
+- A block that mentions the right entity in a contextual way (its description, role, list membership, or related attribute) IS relevant — even if it does not directly answer the question, a human reviewer may chain it with other blocks.
+- For list-style questions ("which programmes…", "which professors…"), blocks listing or describing any qualifying member ARE relevant.
+- For comparison questions, blocks describing either side ARE relevant.
+- Still EXCLUDE: pure boilerplate (cookie banners, login prompts, breadcrumbs) and pages that only share generic topical overlap with no specific named entity / fact.
+
+Be inclusive — false positives will be filtered by a human reviewer; false negatives are expensive.
+
+For each block, return a 0/1 verdict and a one-sentence rationale.
+
+Output ONLY valid JSON:
+```json
+{
+  "judgments": [
+    {"block_id": "...", "relevant": 1, "reason": "..."},
+    {"block_id": "...", "relevant": 0, "reason": "..."}
+  ]
+}
+```
+
+Question: {{ question }}
+Expected mode: {{ gold_mode }}
+
+Blocks ({{ blocks | length }}):
+{% for b in blocks %}
+---
+block_id: {{ b.block_id }}
+source_url: {{ b.source_url }}
+content: {{ b.content }}
+{% endfor %}

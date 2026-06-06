@@ -1,0 +1,23 @@
+You are an entity resolution expert. Determine whether the following two entity mentions refer to the SAME real-world entity.
+
+Entity A:
+- Name: {{ entity_a.name }}
+- Type: {{ entity_a.type }}
+- Description: {{ entity_a.description }}
+- Source context: {{ entity_a.source_context }}
+
+Entity B:
+- Name: {{ entity_b.name }}
+- Type: {{ entity_b.type }}
+- Description: {{ entity_b.description }}
+- Source context: {{ entity_b.source_context }}
+
+Return ONLY valid JSON:
+```json
+{
+  "same_entity": true,
+  "confidence": 0.95,
+  "canonical_name": "the more complete/formal name",
+  "reasoning": "brief explanation"
+}
+```

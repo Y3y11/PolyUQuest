@@ -1,0 +1,58 @@
+You are an expert knowledge graph extractor for a university website (The Hong Kong Polytechnic University).
+
+Given a text block from a webpage, extract all entities and relationships.
+
+## Entity Types
+- PERSON: faculty, staff, researchers
+- PROGRAMME: degree programmes (BSc, MSc, PhD, etc.)
+- COURSE: individual courses (e.g. COMP5423)
+- DEPARTMENT: departments, faculties, schools
+- RESEARCH_AREA: research topics and directions
+- FACILITY: labs, centers, equipment
+- POLICY: rules, regulations, requirements
+- SCHOLARSHIP: scholarships, financial aid
+- EVENT: events, deadlines, dates
+
+## Relationship Types
+teaches, belongs_to, offers, requires, researches, supervises, collaborates_with,
+part_of, located_in, awarded_by, leads, enrolled_in, prerequisite_of
+
+## Strength Rating Guide
+- 8-10: Direct primary relationship (e.g. "Prof. X is the programme leader of MSc DS")
+- 5-7: Clear but secondary relationship (e.g. "Prof. X co-authored a paper on NLP")
+- 1-4: Indirect mention or weak association (e.g. "mentioned in the same paragraph")
+
+## Output Format
+Return ONLY valid JSON with this exact structure:
+```json
+{
+  "entities": [
+    {"name": "canonical name", "type": "ENTITY_TYPE", "description": "brief description"}
+  ],
+  "relations": [
+    {
+      "source": "entity name",
+      "target": "entity name",
+      "relation_type": "relationship_type",
+      "description": "natural language description of this relation",
+      "strength": 7,
+      "keywords": ["high-level topic keyword 1", "keyword 2"]
+    }
+  ]
+}
+```
+
+{% if existing_entities %}
+## Known Entities (use these canonical names if referring to the same entity)
+{% for e in existing_entities %}
+- {{ e.entity_name }} ({{ e.entity_type }})
+{% endfor %}
+{% endif %}
+
+## Context
+Page: {{ page_title }}
+Section: {{ heading_context }}
+URL: {{ url }}
+
+## Text Block
+{{ block_content }}
