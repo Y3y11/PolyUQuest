@@ -98,7 +98,20 @@ def _get_local_model():
             if _model is None:
                 logger.info("loading_local_embedding_model", model=settings.embedding_model)
                 from sentence_transformers import SentenceTransformer
-                _model = SentenceTransformer(settings.embedding_model)
+                try:
+                    # Prefer the local Hugging Face cache. Recent transformers
+                    # versions otherwise perform a metadata HEAD request even
+                    # when all files are already cached.
+                    _model = SentenceTransformer(
+                        settings.embedding_model, local_files_only=True
+                    )
+                except Exception:
+                    logger.info(
+                        "local_embedding_cache_miss",
+                        model=settings.embedding_model,
+                        fallback="download",
+                    )
+                    _model = SentenceTransformer(settings.embedding_model)
     return _model
 
 
@@ -269,7 +282,7 @@ def _prepare_cache_lookup(
     truncated = [_truncate_text(t) for t in texts]
     keys = [_embedding_cache_key(t) for t in truncated]
     unique_key_to_text: dict[str, str] = {}
-    for key, text in zip(keys, truncated):
+    for key, text in zip(keys, truncated, strict=True):
         unique_key_to_text.setdefault(key, text)
     return keys, truncated, unique_key_to_text
 
@@ -303,7 +316,7 @@ def embed_texts(texts: list[str], use_cache: bool = True) -> list[list[float]]:
             vectors = _embed_raw(to_compute_texts)
         except RuntimeError:
             vectors = asyncio.run(_embed_raw_async(to_compute_texts))
-        for k, v in zip(to_compute_keys, vectors):
+        for k, v in zip(to_compute_keys, vectors, strict=True):
             fresh[k] = v
         _cache_put_many(fresh)
 
@@ -327,7 +340,7 @@ async def embed_texts_async(texts: list[str], use_cache: bool = True) -> list[li
     fresh: dict[str, list[float]] = {}
     if to_compute_texts:
         vectors = await _embed_raw_async(to_compute_texts)
-        for k, v in zip(to_compute_keys, vectors):
+        for k, v in zip(to_compute_keys, vectors, strict=True):
             fresh[k] = v
         await asyncio.to_thread(_cache_put_many, fresh)
 

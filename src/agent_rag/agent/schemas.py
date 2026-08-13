@@ -33,14 +33,18 @@ class AgentQueryRequest(BaseModel):
     mode: SearchMode = "auto"
     history: list[AgentTurn] = Field(default_factory=list)
     explore_web: bool = True
-    persist_discoveries: bool = False
+    persist_discoveries: bool = True
     freshness: Literal["auto", "prefer_fresh", "require_fresh"] = "auto"
     budget: AgentBudget = Field(default_factory=AgentBudget)
 
     @model_validator(mode="after")
     def _persistence_requires_exploration(self) -> AgentQueryRequest:
         if self.persist_discoveries and not self.explore_web:
-            raise ValueError("persist_discoveries requires explore_web=true")
+            if "persist_discoveries" in self.model_fields_set:
+                raise ValueError("persist_discoveries requires explore_web=true")
+            # A caller that disables exploration and leaves persistence at its
+            # default is asking for a read-only KB query, not an invalid write.
+            self.persist_discoveries = False
         return self
 
 
@@ -55,6 +59,8 @@ class AgentAction(BaseModel):
 class ExplorationSummary(BaseModel):
     iterations: int = 0
     pages_fetched: int = 0
+    pages_revalidated: int = 0
+    conditional_cache_hits: int = 0
     fetch_failures: int = 0
     frontier_candidates_seen: int = 0
     temporary_evidence_blocks: int = 0

@@ -29,7 +29,11 @@ data/cache/
 data/pipeline/
 data/raw_html/
 data/metadata/
+data/runtime/
 logs/
+
+# Local engineering iteration diary; product PRDs remain tracked.
+docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md
 
 # === OS / editor ===
 .DS_Store

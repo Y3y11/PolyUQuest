@@ -344,6 +344,14 @@ class EvidenceEvaluatorTests(unittest.TestCase):
                 query="question", explore_web=False, persist_discoveries=True
             )
 
+    def test_discoveries_persist_by_default(self) -> None:
+        request = AgentQueryRequest(query="question")
+        self.assertTrue(request.persist_discoveries)
+
+    def test_read_only_query_disables_implicit_persistence(self) -> None:
+        request = AgentQueryRequest(query="question", explore_web=False)
+        self.assertFalse(request.persist_discoveries)
+
     def test_url_policy(self) -> None:
         self.assertTrue(trusted_url("https://www.polyu.edu.hk/study/"))
         self.assertFalse(trusted_url("https://polyu.edu.hk.evil.example/"))

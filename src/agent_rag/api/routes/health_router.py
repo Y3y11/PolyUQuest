@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, status
+from fastapi.responses import JSONResponse
 
 from agent_rag.api.schemas import HealthResponse
 
 router = APIRouter()
 
 
-@router.get("/health", response_model=HealthResponse)
-def health_check():
+def _dependency_status() -> tuple[bool, bool]:
     neo4j_ok = False
     qdrant_ok = False
 
@@ -36,5 +36,49 @@ def health_check():
     except Exception:
         pass
 
-    status = "ok" if (neo4j_ok and qdrant_ok) else "degraded"
-    return HealthResponse(status=status, neo4j=neo4j_ok, qdrant=qdrant_ok)
+    return neo4j_ok, qdrant_ok
+
+
+@router.get("/health/live", response_model=HealthResponse)
+def liveness():
+    return HealthResponse(status="ok")
+
+
+@router.get("/health/dependencies", response_model=HealthResponse)
+def dependency_health():
+    neo4j_ok, qdrant_ok = _dependency_status()
+    service_status = "ok" if (neo4j_ok and qdrant_ok) else "degraded"
+    return HealthResponse(
+        status=service_status, neo4j=neo4j_ok, qdrant=qdrant_ok
+    )
+
+
+@router.get("/health", response_model=HealthResponse)
+def health_check():
+    """Backward-compatible alias for dependency health."""
+    return dependency_health()
+
+
+@router.get("/health/ready", response_model=HealthResponse)
+def readiness(request: Request):
+    neo4j_ok, qdrant_ok = _dependency_status()
+    startup_complete = bool(getattr(request.app.state, "startup_complete", False))
+    embedding_ok = bool(getattr(request.app.state, "embedding_ready", False))
+    bm25_ok = bool(getattr(request.app.state, "bm25_ready", False))
+    ready = all(
+        (startup_complete, embedding_ok, bm25_ok, neo4j_ok, qdrant_ok)
+    )
+    payload = HealthResponse(
+        status="ok" if ready else "not_ready",
+        neo4j=neo4j_ok,
+        qdrant=qdrant_ok,
+        embedding=embedding_ok,
+        bm25=bm25_ok,
+        startup_complete=startup_complete,
+    )
+    if ready:
+        return payload
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload.model_dump(),
+    )

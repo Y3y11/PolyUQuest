@@ -19,6 +19,7 @@ from agent_rag.tools.schemas import (
     RouteDecision,
     SearchOutput,
 )
+from agent_rag.tools.snapshot import PageSnapshot
 
 
 class FakeSearch:
@@ -58,16 +59,35 @@ class FakeExpand:
 
 
 class FakeFetch:
-    def __init__(self, store: ObservationStore, fail: bool = False):
+    def __init__(
+        self, store: ObservationStore, fail: bool = False, not_modified: bool = False
+    ):
         self.store = store
         self.fail = fail
         self.calls = 0
+        self.not_modified = not_modified
+        self.last_input = None
 
     async def run(self, tool_input):
         self.calls += 1
+        self.last_input = tool_input
         if self.fail:
             raise RuntimeError("fetch failed")
         now = datetime.now(UTC).isoformat()
+        if self.not_modified:
+            return FetchOutput(
+                observation_id="fetch-304",
+                metadata=FetchMetadata(
+                    requested_url=str(tool_input.url),
+                    final_url=str(tool_input.url),
+                    fetched_at=now,
+                    content_hash="",
+                    etag="etag-1",
+                    last_modified="Wed, 12 Aug 2026 00:00:00 GMT",
+                    status_code=304,
+                ),
+                not_modified=True,
+            )
         block = {
             "block_id": "fresh-block",
             "content": "The admission deadline is 30 November.",
@@ -150,9 +170,41 @@ class FakeComposer:
         return f"answer from {len(evidence)} evidence blocks"
 
 
+class FailingComposer:
+    def compose(self, _query, _evidence, _history):
+        raise ConnectionError("generation unavailable")
+
+
 class FakeProfileEnricher:
     def enrich(self, profile):
         return profile
+
+
+class FakeSnapshot:
+    def __init__(self, exists: bool = False):
+        self.exists = exists
+
+    def run(self, url):
+        if not self.exists:
+            return PageSnapshot()
+        return PageSnapshot(
+            page={
+                "url": url,
+                "title": "Admission",
+                "page_type": "programme",
+                "fetched_at": "2026-08-12T00:00:00+00:00",
+                "content_hash": "hash",
+                "etag": "etag-1",
+                "last_modified": "Wed, 12 Aug 2026 00:00:00 GMT",
+            },
+            blocks=[
+                {
+                    "block_id": "cached-block",
+                    "content": "The admission deadline is 30 November.",
+                    "heading_context": "Admission",
+                }
+            ],
+        )
 
 
 def _existing_evidence() -> EvidenceBlock:
@@ -166,11 +218,13 @@ def _existing_evidence() -> EvidenceBlock:
 
 
 class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
-    def build_agent(self, *, evidence=None, fetch_fail=False):
+    def build_agent(
+        self, *, evidence=None, fetch_fail=False, not_modified=False, snapshot=False
+    ):
         store = ObservationStore()
         search = FakeSearch(evidence or [])
         expand = FakeExpand()
-        fetch = FakeFetch(store, fail=fetch_fail)
+        fetch = FakeFetch(store, fail=fetch_fail, not_modified=not_modified)
         stage = FakeStage()
         publish = FakePublish()
         agent = QueryDrivenAgent(
@@ -182,6 +236,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             profile_enricher=FakeProfileEnricher(),
             composer=FakeComposer(),
             observations=store,
+            snapshot_tool=FakeSnapshot(exists=snapshot),
         )
         return agent, search, expand, fetch, stage, publish
 
@@ -189,7 +244,9 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         agent, _, expand, fetch, stage, _ = self.build_agent(
             evidence=[_existing_evidence()]
         )
-        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        result = await agent.run(
+            AgentQueryRequest(query="admission deadline", persist_discoveries=False)
+        )
         self.assertEqual(result.response_status, "answered")
         self.assertEqual(fetch.calls, 0)
         self.assertEqual(expand.calls, 0)
@@ -197,7 +254,9 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_miss_expands_and_uses_temporary_evidence(self) -> None:
         agent, _, expand, fetch, stage, _ = self.build_agent()
-        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        result = await agent.run(
+            AgentQueryRequest(query="admission deadline", persist_discoveries=False)
+        )
         self.assertEqual(result.response_status, "answered")
         self.assertEqual(expand.calls, 1)
         self.assertEqual(fetch.calls, 1)
@@ -207,7 +266,9 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_outage_falls_back_to_bounded_trusted_web(self) -> None:
         agent, _, expand, fetch, _, _ = self.build_agent()
         agent.search_tool = FailingSearch()
-        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        result = await agent.run(
+            AgentQueryRequest(query="admission deadline", persist_discoveries=False)
+        )
         self.assertEqual(result.response_status, "answered")
         self.assertEqual(expand.calls, 1)
         self.assertEqual(fetch.calls, 1)
@@ -225,7 +286,10 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         async def emit(event: str, data: dict) -> None:
             events.append((event, data))
 
-        await agent.run(AgentQueryRequest(query="admission deadline"), emit=emit)
+        await agent.run(
+            AgentQueryRequest(query="admission deadline", persist_discoveries=False),
+            emit=emit,
+        )
 
         event_names = [event for event, _ in events]
         self.assertIn("routing", event_names)
@@ -241,20 +305,20 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started_fetch["details"]["edge_type"], "LINKS_TO")
         self.assertIn("candidate_score", started_fetch["details"])
 
-    async def test_explicit_persistence_publishes_patch(self) -> None:
+    async def test_default_exploration_publishes_patch(self) -> None:
         agent, _, _, _, stage, publish = self.build_agent()
-        result = await agent.run(
-            AgentQueryRequest(query="admission deadline", persist_discoveries=True)
-        )
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
         self.assertEqual(result.exploration.patches_published, 1)
         self.assertEqual(stage.calls, 1)
         self.assertEqual(publish.calls, 1)
+        self.assertTrue(all(not item.temporary for item in result.evidence))
 
     async def test_fetch_failure_is_bounded_and_abstains(self) -> None:
         agent, _, _, fetch, _, _ = self.build_agent(fetch_fail=True)
         result = await agent.run(
             AgentQueryRequest(
                 query="unknown question",
+                persist_discoveries=False,
                 budget=AgentBudget(max_iterations=2, max_pages=2, max_depth=1),
             )
         )
@@ -264,6 +328,22 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             result.exploration.stop_reason,
             {"frontier_exhausted", "iteration_budget_exhausted"},
         )
+
+    async def test_not_modified_reuses_snapshot_without_publishing(self) -> None:
+        agent, _, _, fetch, stage, publish = self.build_agent(
+            not_modified=True, snapshot=True
+        )
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        self.assertEqual(fetch.last_input.if_none_match, "etag-1")
+        self.assertEqual(
+            fetch.last_input.if_modified_since,
+            "Wed, 12 Aug 2026 00:00:00 GMT",
+        )
+        self.assertEqual(result.exploration.conditional_cache_hits, 1)
+        self.assertTrue(any(item.block_id == "cached-block" for item in result.evidence))
+        self.assertTrue(all(not item.temporary for item in result.evidence))
+        self.assertEqual(stage.calls, 0)
+        self.assertEqual(publish.calls, 0)
 
     async def test_irrelevant_evidence_without_exploration_abstains(self) -> None:
         irrelevant = EvidenceBlock(
@@ -278,6 +358,15 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.response_status, "abstained")
         self.assertEqual(fetch.calls, 0)
+
+    async def test_generation_failure_returns_partial_not_answered(self) -> None:
+        agent, _, _, _, _, _ = self.build_agent(evidence=[_existing_evidence()])
+        agent.composer = FailingComposer()
+        result = await agent.run(
+            AgentQueryRequest(query="admission deadline", persist_discoveries=False)
+        )
+        self.assertEqual(result.response_status, "partial")
+        self.assertIn("答案生成服务当前不可用", result.answer)
 
 
 if __name__ == "__main__":

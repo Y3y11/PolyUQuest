@@ -125,15 +125,24 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `POST` | `/api/agent/query` | Bounded search/expand/fetch Agent with evidence trace |
 | `POST` | `/api/agent/query/stream` | Agent actions and final response over SSE |
 | `GET`  | `/api/graph/stats` | Knowledge-graph node counts |
-| `GET`  | `/api/health` | Liveness check |
+| `GET`  | `/api/health/live` | Process liveness without dependency access |
+| `GET`  | `/api/health/ready` | Startup and core dependency readiness |
+| `GET`  | `/api/health/dependencies` | Neo4j and Qdrant status |
+| `GET`  | `/api/health` | Backward-compatible dependency health |
 
 Full interactive documentation is at `http://localhost:8000/docs`.
 
 The Agent endpoint preserves the original retrieval API. Web exploration is
-restricted to the crawler domain allowlist and does not update the durable graph
-unless `persist_discoveries=true`. See
-[`docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`](docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md)
-for contracts, budgets, verification, and current MVP limitations.
+restricted to the crawler domain allowlist. Fetched pages are written to the
+durable graph through an audited Patch by default; set
+`persist_discoveries=false` for an explicitly read-only request, or
+`AGENT_ALLOW_PERSISTENCE=false` for a read-only deployment. Observation and
+Patch recovery state is stored in `data/runtime/agent_ledger.sqlite3` by
+default. Production startup disables Uvicorn reload; use `API_RELOAD=true` only
+for local development. See
+[`docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md`](docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md)
+and [`docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`](docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md)
+for the write and recovery contracts.
 
 Agent query analysis uses an open-domain `entity + qualifier + intent +
 required_claim` contract. Institution names and seed labels live in connector

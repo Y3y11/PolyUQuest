@@ -89,6 +89,8 @@ class FrontierSeed(BaseModel):
     supports_sub_goals: list[str] = Field(default_factory=list)
     already_indexed: bool = False
     last_fetched_at: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
     score: float = 0.0
 
 
@@ -175,6 +177,7 @@ class FetchOutput(BaseModel):
 
 
 PatchStatus = Literal["staged", "publishing", "published", "repair_required", "failed"]
+PatchOperation = Literal["pending", "create", "update", "unchanged", "repair"]
 
 
 class StagePatchInput(BaseModel):
@@ -189,10 +192,14 @@ class GraphPatch(BaseModel):
     run_id: str
     source_url: str
     content_hash: str
+    previous_content_hash: str | None = None
+    operation: PatchOperation = "pending"
     persist_level: Literal["blocks_only"] = "blocks_only"
     status: PatchStatus = "staged"
     created_at: str
     updated_at: str
+    attempts: int = 0
+    last_attempt_at: str | None = None
     error: str | None = None
 
 
@@ -205,4 +212,6 @@ class PublishPatchOutput(BaseModel):
     webpages_written: int = 0
     blocks_written: int = 0
     links_written: int = 0
+    blocks_deleted: int = 0
+    links_deleted: int = 0
     read_after_write_ok: bool = False

@@ -46,6 +46,8 @@ class QueryResponse(BaseModel):
 
 class GraphStatsResponse(BaseModel):
     webpages: int
+    fetched_webpages: int = 0
+    stub_webpages: int = 0
     blocks: int
     entities: int
     topic_keywords: int
@@ -57,8 +59,11 @@ class GraphStatsResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    neo4j: bool
-    qdrant: bool
+    neo4j: bool | None = None
+    qdrant: bool | None = None
+    embedding: bool | None = None
+    bm25: bool | None = None
+    startup_complete: bool | None = None
 
 
 class GraphDataRequest(BaseModel):

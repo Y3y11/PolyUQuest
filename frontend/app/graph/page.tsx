@@ -124,8 +124,11 @@ const CROSS_LAYER_EDGE_TYPES = new Set([
 ]);
 
 export default function GraphPage() {
-  // Page-level mode: layered (default) vs free explore (the legacy view).
-  const [mode, setMode] = useState<"layered" | "force">("layered");
+  // Agent exploration writes WebPage/Block/Link first; entity enrichment may
+  // run later. Start with the live cross-layer graph so newly acquired
+  // knowledge is visible immediately instead of opening an entity-only demo
+  // slice that can legitimately be empty on a fresh deployment.
+  const [mode, setMode] = useState<"layered" | "force">("force");
   const [activeTab, setActiveTab] = useState<string>(SLICE_TABS[0].id);
 
   const [graphData, setGraphData] = useState<GraphData | null>(null);
@@ -249,7 +252,7 @@ export default function GraphPage() {
       const data = await getGraphData(searchQuery, undefined, controller.signal);
       setGraphData(data);
       if (data.nodes.length === 0) {
-        setSearchEmpty(`No entity matched "${searchQuery}".`);
+        setSearchEmpty(`No page, block, entity, or topic matched "${searchQuery}".`);
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -423,7 +426,7 @@ export default function GraphPage() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder="Search entity…"
+          placeholder="Search graph…"
           className="pl-8 pr-3 py-1.5 rounded-md border border-border bg-surface-alt text-[13px] text-text-main placeholder-text-muted focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/15 transition-all w-56"
         />
       </div>
@@ -494,8 +497,8 @@ export default function GraphPage() {
                     Free explore
                   </span>
                   <span className="text-[12px] text-text-muted">
-                    Search any entity, double-click to expand neighbors, use the
-                    branch icon for shortest path.
+                    Search any page, block, entity, or topic; double-click to
+                    expand neighbors, use the branch icon for shortest path.
                   </span>
                   <div className="ml-auto" />
                   <button
@@ -977,7 +980,12 @@ function FullGraphStats({ stats }: { stats: GraphStats }) {
   return (
     <div className="space-y-3 mt-2">
       {[
-        { label: "Pages", value: stats.webpages, color: NODE_TYPE_COLORS.WebPage },
+        {
+          label: "Pages",
+          value: stats.webpages,
+          detail: `${stats.fetched_webpages ?? 0} fetched · ${stats.stub_webpages ?? 0} stubs`,
+          color: NODE_TYPE_COLORS.WebPage,
+        },
         { label: "Snippets", value: stats.blocks, color: NODE_TYPE_COLORS.Block },
         { label: "Entities", value: stats.entities, color: NODE_TYPE_COLORS.Entity },
         { label: "Topics", value: stats.topic_keywords, color: NODE_TYPE_COLORS.TopicKeyword },
@@ -993,9 +1001,16 @@ function FullGraphStats({ stats }: { stats: GraphStats }) {
             />
             <span className="text-xs text-text-main">{item.label}</span>
           </div>
-          <span className="text-sm font-mono font-bold text-primary">
-            {item.value.toLocaleString()}
-          </span>
+          <div className="text-right">
+            <span className="block text-sm font-mono font-bold text-primary">
+              {item.value.toLocaleString()}
+            </span>
+            {item.detail && (
+              <span className="block text-[9px] text-text-muted mt-0.5">
+                {item.detail}
+              </span>
+            )}
+          </div>
         </div>
       ))}
 

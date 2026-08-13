@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from agent_rag.tools.fetch import FetchTrustedPageTool
     from agent_rag.tools.graph_patch import PublishPatchTool, StagePatchTool
     from agent_rag.tools.search import SearchTool
+    from agent_rag.tools.snapshot import PageSnapshotTool
 
 EmitCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -113,6 +114,7 @@ class QueryDrivenAgent:
         frontier_selector: FrontierSelector | None = None,
         composer: AnswerComposer | None = None,
         observations: ObservationStore = observation_store,
+        snapshot_tool: PageSnapshotTool | None = None,
     ):
         if search_tool is None:
             from agent_rag.tools.search import SearchTool
@@ -143,6 +145,11 @@ class QueryDrivenAgent:
         self.frontier_selector = frontier_selector or FrontierSelector()
         self.composer = composer or AnswerComposer()
         self.observations = observations
+        if snapshot_tool is None:
+            from agent_rag.tools.snapshot import PageSnapshotTool
+
+            snapshot_tool = PageSnapshotTool()
+        self.snapshot_tool = snapshot_tool
 
     async def run(
         self, request: AgentQueryRequest, emit: EmitCallback | None = None
@@ -378,6 +385,34 @@ class QueryDrivenAgent:
                 shortlist=min(len(candidates), self.frontier_selector.max_candidates),
             )
             visited.add(candidate.url)
+            snapshot = None
+            snapshot_started = time.perf_counter()
+            try:
+                snapshot = await asyncio.to_thread(
+                    self.snapshot_tool.run, candidate.url
+                )
+                if snapshot.exists:
+                    await record(
+                        "polyuquest.load_page_snapshot",
+                        "succeeded",
+                        int((time.perf_counter() - snapshot_started) * 1000),
+                        url=candidate.url,
+                        blocks=len(snapshot.blocks),
+                        has_validator=bool(
+                            snapshot.page.get("etag")
+                            or snapshot.page.get("last_modified")
+                        ),
+                    )
+            except Exception as exc:
+                await record(
+                    "polyuquest.load_page_snapshot",
+                    "failed",
+                    int((time.perf_counter() - snapshot_started) * 1000),
+                    url=candidate.url,
+                    error=str(exc),
+                    fallback="unconditional_fetch",
+                )
+                snapshot = None
             fetch_started = time.perf_counter()
             await record(
                 "web.fetch_trusted_page",
@@ -399,9 +434,22 @@ class QueryDrivenAgent:
                         run_id=run_id,
                         timeout_seconds=float(fetch_cfg.get("timeout_seconds", 15)),
                         max_bytes=int(fetch_cfg.get("max_bytes", 5_000_000)),
+                        if_none_match=(
+                            snapshot.page.get("etag")
+                            if snapshot is not None and snapshot.blocks
+                            else None
+                        ),
+                        if_modified_since=(
+                            snapshot.page.get("last_modified")
+                            if snapshot is not None and snapshot.blocks
+                            else None
+                        ),
                     )
                 )
                 summary.pages_fetched += 1
+                if fetched.not_modified:
+                    summary.pages_revalidated += 1
+                    summary.conditional_cache_hits += 1
                 trace.extend(fetched.trace)
                 await record(
                     "web.fetch_trusted_page",
@@ -409,6 +457,12 @@ class QueryDrivenAgent:
                     int((time.perf_counter() - fetch_started) * 1000),
                     url=fetched.metadata.final_url,
                     relevant_blocks=fetched.evidence_gain.relevant_blocks,
+                    not_modified=fetched.not_modified,
+                    reused_blocks=(
+                        len(snapshot.blocks)
+                        if fetched.not_modified and snapshot is not None
+                        else 0
+                    ),
                 )
             except Exception as exc:
                 summary.fetch_failures += 1
@@ -427,7 +481,41 @@ class QueryDrivenAgent:
 
             record_data = self.observations.get(fetched.observation_id)
             fetched_evidence: list[EvidenceBlock] = []
-            if record_data and fetched.evidence_gain.relevant_blocks > 0:
+            if fetched.not_modified and snapshot is not None:
+                scored_snapshot = sorted(
+                    snapshot.blocks,
+                    key=lambda block: -lexical_score(
+                        request.query,
+                        (
+                            f"{block.get('heading_context', '')} "
+                            f"{block.get('content', '')}"
+                        ),
+                    ),
+                )[:8]
+                for block in scored_snapshot:
+                    score = lexical_score(
+                        request.query,
+                        f"{block.get('heading_context', '')} {block.get('content', '')}",
+                    )
+                    fetched_evidence.append(
+                        EvidenceBlock(
+                            block_id=block.get("block_id", ""),
+                            content=block.get("content", ""),
+                            heading_context=block.get("heading_context", ""),
+                            source_url=str(snapshot.page.get("url") or candidate.url),
+                            source_title=str(snapshot.page.get("title", "")),
+                            page_type=str(snapshot.page.get("page_type", "other")),
+                            fetched_at=(
+                                snapshot.page.get("fetched_at")
+                                or snapshot.page.get("last_crawled")
+                            ),
+                            content_hash=snapshot.page.get("content_hash") or None,
+                            scores=EvidenceScores(retrieval=score),
+                            supports_sub_goals=["goal-0"],
+                            temporary=False,
+                        )
+                    )
+            elif record_data and fetched.evidence_gain.relevant_blocks > 0:
                 selected_ids = set(fetched.block_refs)
                 for block in record_data.blocks:
                     if block.get("block_id") not in selected_ids:
@@ -453,7 +541,8 @@ class QueryDrivenAgent:
                         )
                     )
             evidence = _merge_evidence(evidence, fetched_evidence)
-            summary.temporary_evidence_blocks += len(fetched_evidence)
+            if not fetched.not_modified:
+                summary.temporary_evidence_blocks += len(fetched_evidence)
             for item in fetched.discovered_links:
                 item.graph_distance = candidate.graph_distance + 1
                 frontier.append(item)
@@ -476,12 +565,24 @@ class QueryDrivenAgent:
                     )
                     if published.patch.status == "published":
                         summary.patches_published += 1
+                        for item in evidence:
+                            if item.observation_id == fetched.observation_id:
+                                item.temporary = False
                     await record(
                         "polyuquest.publish_patch",
                         "succeeded" if published.read_after_write_ok else "failed",
                         int((time.perf_counter() - publish_started) * 1000),
                         patch_id=patch.patch_id,
                         patch_status=published.patch.status,
+                        operation=published.patch.operation,
+                        previous_content_hash=published.patch.previous_content_hash,
+                        content_hash=published.patch.content_hash,
+                        webpages_written=published.webpages_written,
+                        blocks_written=published.blocks_written,
+                        links_written=published.links_written,
+                        blocks_deleted=published.blocks_deleted,
+                        links_deleted=published.links_deleted,
+                        read_after_write_ok=published.read_after_write_ok,
                     )
                 except Exception as exc:
                     await record(
@@ -513,6 +614,7 @@ class QueryDrivenAgent:
                 summary.stop_reason = "exploration_disabled"
 
         answer_started = time.perf_counter()
+        compose_failed = False
         answer_evidence = [] if assessment.decision == "abstain" else evidence
         await record("answer.compose", "started", evidence=len(answer_evidence))
         try:
@@ -528,6 +630,7 @@ class QueryDrivenAgent:
                 int((time.perf_counter() - answer_started) * 1000),
             )
         except Exception as exc:
+            compose_failed = True
             await record(
                 "answer.compose",
                 "failed",
@@ -538,6 +641,8 @@ class QueryDrivenAgent:
 
         if assessment.decision == "abstain" or not evidence:
             response_status = "abstained"
+        elif compose_failed:
+            response_status = "partial"
         elif assessment.decision == "answer":
             response_status = "answered"
         else:

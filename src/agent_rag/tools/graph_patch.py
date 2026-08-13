@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -26,6 +27,15 @@ from agent_rag.tools.schemas import (
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+_URL_LOCKS: dict[str, threading.RLock] = {}
+_URL_LOCKS_GUARD = threading.Lock()
+
+
+def _url_lock(url: str) -> threading.RLock:
+    with _URL_LOCKS_GUARD:
+        return _URL_LOCKS.setdefault(url, threading.RLock())
 
 
 class StagePatchTool:
@@ -89,7 +99,14 @@ class PublishPatchTool:
         if observation is None:
             raise KeyError(f"Observation expired before publish: {patch.observation_id}")
 
+        with _url_lock(patch.source_url):
+            return self._publish_locked(patch, observation)
+
+    def _publish_locked(self, patch: GraphPatch, observation) -> PublishPatchOutput:
+        patch.attempts += 1
+        patch.last_attempt_at = _now()
         patch.status = "publishing"
+        patch.error = None
         patch.updated_at = _now()
         self._patches.put(patch)
         graph_store = None
@@ -100,6 +117,12 @@ class PublishPatchTool:
                 graph_store = GraphVectorStore()
             else:
                 graph_store = self._graph_store_factory()
+            graph_store.init_all()
+            current_page = graph_store.neo4j.get_webpages_batch(
+                [patch.source_url]
+            ).get(patch.source_url)
+            previous_hash = (current_page or {}).get("content_hash") or None
+            patch.previous_content_hash = previous_hash
             page = {
                 **observation.metadata,
                 "url": patch.source_url,
@@ -132,7 +155,44 @@ class PublishPatchTool:
                 for link in observation.discovered_links
                 if link.get("url")
             ]
-            page_text = f"{page.get('title', '')}\n{page.get('meta_description', '')}".strip()
+            block_ids = [block["block_id"] for block in blocks]
+            existing_blocks = graph_store.neo4j.get_blocks_for_webpage(
+                patch.source_url
+            )
+            existing_block_ids = {
+                block.get("block_id", "") for block in existing_blocks
+            }
+            existing_vectors = graph_store.qdrant.retrieve_vectors(
+                "blocks", block_ids
+            )
+            page_vector = graph_store.qdrant.retrieve_vectors(
+                "webpages", [patch.source_url]
+            )
+            page_text = (
+                f"{page.get('title', '')}\n{page.get('meta_description', '')}".strip()
+            )
+            page_vector_ok = not page_text or patch.source_url in page_vector
+
+            if current_page is None or not previous_hash:
+                patch.operation = "create"
+            elif previous_hash != patch.content_hash:
+                patch.operation = "update"
+            elif (
+                existing_block_ids == set(block_ids)
+                and len(existing_vectors) == len(block_ids)
+                and page_vector_ok
+            ):
+                patch.operation = "unchanged"
+                patch.status = "published"
+                patch.updated_at = _now()
+                self._patches.put(patch)
+                return PublishPatchOutput(
+                    patch=patch,
+                    read_after_write_ok=True,
+                )
+            else:
+                patch.operation = "repair"
+
             if self._embedder is None:
                 from agent_rag.retrieval._embedding import embed_texts
 
@@ -151,11 +211,30 @@ class PublishPatchTool:
             graph_store.bulk_store_links(links, build_id)
             graph_store.bulk_store_blocks(blocks, block_embeddings, build_id)
 
-            neo_pages = graph_store.neo4j.get_webpages_batch([patch.source_url])
-            vector_blocks = graph_store.qdrant.retrieve_vectors(
-                "blocks", [block["block_id"] for block in blocks]
+            orphan_block_ids, links_deleted = (
+                graph_store.neo4j.reconcile_agent_page_snapshot(
+                    patch.source_url,
+                    block_ids,
+                    [link["to_url"] for link in links],
+                )
             )
-            read_ok = patch.source_url in neo_pages and len(vector_blocks) == len(blocks)
+            if orphan_block_ids:
+                graph_store.qdrant.delete_points("blocks", orphan_block_ids)
+
+            neo_pages = graph_store.neo4j.get_webpages_batch([patch.source_url])
+            neo_blocks = graph_store.neo4j.get_blocks_for_webpage(patch.source_url)
+            vector_blocks = graph_store.qdrant.retrieve_vectors(
+                "blocks", block_ids
+            )
+            vector_pages = graph_store.qdrant.retrieve_vectors(
+                "webpages", [patch.source_url]
+            )
+            read_ok = (
+                patch.source_url in neo_pages
+                and {block.get("block_id") for block in neo_blocks} == set(block_ids)
+                and len(vector_blocks) == len(blocks)
+                and (not page_text or patch.source_url in vector_pages)
+            )
             patch.status = "published" if read_ok else "repair_required"
             patch.updated_at = _now()
             if not read_ok:
@@ -166,6 +245,8 @@ class PublishPatchTool:
                 webpages_written=1,
                 blocks_written=len(blocks),
                 links_written=len(links),
+                blocks_deleted=len(orphan_block_ids),
+                links_deleted=links_deleted,
                 read_after_write_ok=read_ok,
             )
         except Exception as exc:

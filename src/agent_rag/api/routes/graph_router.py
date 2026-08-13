@@ -105,97 +105,143 @@ def graph_data(req: GraphDataRequest):
     try:
         nodes: list[GraphNode] = []
         edges: list[GraphEdge] = []
+        seen_nodes: set[str] = set()
+        seen_edges: set[tuple[str, str, str]] = set()
+
+        def add_node(raw: dict[str, Any], labels: list[str]) -> str:
+            node = _node_from_record(raw, labels)
+            if not node or not node.id:
+                return ""
+            if node.id not in seen_nodes and len(nodes) < req.max_nodes:
+                seen_nodes.add(node.id)
+                nodes.append(node)
+            return node.id if node.id in seen_nodes else ""
+
+        def add_edge(
+            src_raw: dict[str, Any],
+            src_labels: list[str],
+            tgt_raw: dict[str, Any],
+            tgt_labels: list[str],
+            rel: Any,
+        ) -> None:
+            src = _endpoint_id(src_raw, src_labels)
+            tgt = _endpoint_id(tgt_raw, tgt_labels)
+            if not src or not tgt or src not in seen_nodes or tgt not in seen_nodes:
+                return
+            rel_props = dict(rel)
+            rel_type = rel.type if hasattr(rel, "type") else rel_props.get("relation_type", "")
+            key = (src, tgt, rel_type)
+            if key in seen_edges:
+                return
+            seen_edges.add(key)
+            edges.append(_edge_from_rel(rel_props, rel_type, src, tgt))
 
         if req.center_entity:
-            # Case-insensitive substring on entity_name or any alias, plus an
-            # exact match on entity_id. Front-end users type free-form names
-            # ("msc dsa", "Data Science"), so we lowercase both sides; the
-            # alias scan lets "Data Science and Analytics" match an entity
-            # whose canonical name is "MSc in Data Science and Analytics".
+            # The graph search box is intentionally cross-layer. Agent exploration
+            # may have persisted only WebPage/Block nodes, before entity extraction
+            # has run, so an Entity-only lookup makes successfully written data
+            # appear absent.
             query = """
-            MATCH (e:Entity)
-            WHERE toLower(e.entity_name) CONTAINS toLower($name)
-               OR e.entity_id = $name
-               OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower($name))
-            WITH e LIMIT 1
-            OPTIONAL MATCH (e)-[r:RELATES_TO]-(n:Entity)
-            WITH e, collect({node: n, rel: r, type: type(r)}) AS rels
-            OPTIONAL MATCH (e)-[:EXTRACTED_FROM]->(b:Block)
-            WITH e, rels, collect(b) AS blocks
-            OPTIONAL MATCH (e)-[:HAS_TOPIC]->(t:TopicKeyword)
-            RETURN e, rels, blocks, collect(t) AS topics
+            MATCH (c)
+            WHERE c.entity_id = $name
+               OR c.block_id = $name
+               OR c.keyword = $name
+               OR c.url = $name
+               OR toLower(coalesce(c.entity_name, '')) CONTAINS toLower($name)
+               OR any(a IN coalesce(c.aliases, []) WHERE toLower(a) CONTAINS toLower($name))
+               OR toLower(coalesce(c.title, '')) CONTAINS toLower($name)
+               OR toLower(coalesce(c.url, '')) CONTAINS toLower($name)
+               OR toLower(coalesce(c.heading_context, '')) CONTAINS toLower($name)
+               OR toLower(coalesce(c.content, '')) CONTAINS toLower($name)
+            WITH c,
+                 CASE
+                   WHEN c.entity_id = $name OR c.block_id = $name
+                     OR c.keyword = $name OR c.url = $name THEN 0
+                   WHEN c.content_hash IS NOT NULL THEN 1
+                   ELSE 2
+                 END AS rank
+            ORDER BY rank
+            LIMIT 1
+            OPTIONAL MATCH (c)-[r]-(n)
+            WITH c, r, n
+            ORDER BY CASE type(r)
+                       WHEN 'CONTAINS' THEN 0
+                       WHEN 'EXTRACTED_FROM' THEN 1
+                       WHEN 'HAS_TOPIC' THEN 2
+                       WHEN 'RELATES_TO' THEN 3
+                       WHEN 'LINKS_TO' THEN 4
+                       ELSE 5
+                     END
+            LIMIT $limit
+            RETURN c, labels(c) AS center_labels,
+                   r, n, labels(n) AS neighbor_labels,
+                   CASE WHEN r IS NULL THEN true
+                        ELSE elementId(startNode(r)) = elementId(c)
+                   END AS center_is_source
             """
             with store._driver.session() as session:
-                result = session.run(query, name=req.center_entity).single()
-                if result:
-                    e = dict(result["e"])
-                    nodes.append(GraphNode(
-                        id=e["entity_id"], label=e["entity_name"],
-                        type="Entity", properties=e,
-                    ))
-                    for rel_data in result["rels"]:
-                        n = rel_data.get("node")
-                        r = rel_data.get("rel")
-                        if n and r:
-                            nd = dict(n)
-                            nodes.append(GraphNode(
-                                id=nd["entity_id"], label=nd["entity_name"],
-                                type="Entity", properties=nd,
-                            ))
-                            edges.append(GraphEdge(
-                                source=e["entity_id"], target=nd["entity_id"],
-                                type=dict(r).get("relation_type", "RELATES_TO"),
-                                properties=dict(r),
-                            ))
-                    for b in result["blocks"][:5]:
-                        bd = dict(b)
-                        nodes.append(GraphNode(
-                            id=bd["block_id"], label=bd.get("heading_context", "Block")[:50],
-                            type="Block", properties=bd,
-                        ))
-                        edges.append(GraphEdge(
-                            source=e["entity_id"], target=bd["block_id"],
-                            type="EXTRACTED_FROM",
-                        ))
-                    for t in result["topics"]:
-                        td = dict(t)
-                        nodes.append(GraphNode(
-                            id=td["keyword"], label=td["keyword"],
-                            type="TopicKeyword", properties=td,
-                        ))
-                        edges.append(GraphEdge(
-                            source=e["entity_id"], target=td["keyword"],
-                            type="HAS_TOPIC",
-                        ))
+                for record in session.run(
+                    query,
+                    name=req.center_entity,
+                    limit=req.max_nodes * 2,
+                ):
+                    center_raw = dict(record["c"])
+                    center_labels = list(record["center_labels"])
+                    add_node(center_raw, center_labels)
+                    if record["n"] is None or record["r"] is None:
+                        continue
+                    neighbor_raw = dict(record["n"])
+                    neighbor_labels = list(record["neighbor_labels"])
+                    add_node(neighbor_raw, neighbor_labels)
+                    if record["center_is_source"]:
+                        add_edge(
+                            center_raw,
+                            center_labels,
+                            neighbor_raw,
+                            neighbor_labels,
+                            record["r"],
+                        )
+                    else:
+                        add_edge(
+                            neighbor_raw,
+                            neighbor_labels,
+                            center_raw,
+                            center_labels,
+                            record["r"],
+                        )
         else:
+            # Prefer relationships produced by successfully fetched pages. This
+            # makes the latest incremental agent writes visible even when the
+            # entity-enrichment stage has not populated RELATES_TO yet.
             query = """
-            MATCH (e:Entity)-[r:RELATES_TO]->(n:Entity)
-            RETURN e, r, n
+            MATCH (a)-[r]->(b)
+            WHERE type(r) IN [
+              'CONTAINS', 'LINKS_TO', 'EXTRACTED_FROM',
+              'HAS_TOPIC', 'RELATES_TO', 'PARENT_BLOCK'
+            ]
+            WITH a, r, b,
+                 CASE
+                   WHEN coalesce(a.content_hash, '') <> '' AND type(r) = 'CONTAINS' THEN 0
+                   WHEN coalesce(a.content_hash, '') <> '' AND type(r) = 'LINKS_TO' THEN 1
+                   WHEN type(r) = 'EXTRACTED_FROM' THEN 2
+                   WHEN type(r) = 'HAS_TOPIC' THEN 3
+                   WHEN type(r) = 'RELATES_TO' THEN 4
+                   ELSE 5
+                 END AS rank
+            ORDER BY rank, coalesce(a.fetched_at, '') DESC
+            RETURN a, labels(a) AS a_labels,
+                   r, b, labels(b) AS b_labels
             LIMIT $limit
             """
             with store._driver.session() as session:
-                seen_ids: set[str] = set()
-                for record in session.run(query, limit=req.max_nodes):
-                    e = dict(record["e"])
-                    n = dict(record["n"])
-                    r = dict(record["r"])
-                    if e["entity_id"] not in seen_ids:
-                        nodes.append(GraphNode(
-                            id=e["entity_id"], label=e["entity_name"],
-                            type="Entity", properties=e,
-                        ))
-                        seen_ids.add(e["entity_id"])
-                    if n["entity_id"] not in seen_ids:
-                        nodes.append(GraphNode(
-                            id=n["entity_id"], label=n["entity_name"],
-                            type="Entity", properties=n,
-                        ))
-                        seen_ids.add(n["entity_id"])
-                    edges.append(GraphEdge(
-                        source=e["entity_id"], target=n["entity_id"],
-                        type=r.get("relation_type", "RELATES_TO"),
-                        properties=r,
-                    ))
+                for record in session.run(query, limit=req.max_nodes * 4):
+                    a_raw = dict(record["a"])
+                    a_labels = list(record["a_labels"])
+                    b_raw = dict(record["b"])
+                    b_labels = list(record["b_labels"])
+                    add_node(a_raw, a_labels)
+                    add_node(b_raw, b_labels)
+                    add_edge(a_raw, a_labels, b_raw, b_labels, record["r"])
 
         return GraphDataResponse(nodes=nodes, edges=edges)
     finally:

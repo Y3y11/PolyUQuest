@@ -52,6 +52,8 @@ export interface AgentAssessment {
 export interface AgentExplorationSummary {
   iterations: number;
   pages_fetched: number;
+  pages_revalidated: number;
+  conditional_cache_hits: number;
   fetch_failures: number;
   frontier_candidates_seen: number;
   temporary_evidence_blocks: number;
@@ -91,6 +93,8 @@ export type AgentActivity =
 
 export interface GraphStats {
   webpages: number;
+  fetched_webpages?: number;
+  stub_webpages?: number;
   blocks: number;
   entities: number;
   topic_keywords: number;
@@ -367,7 +371,7 @@ export async function agentQueryStreamAPI(
       mode: "auto",
       history: history || [],
       explore_web: true,
-      persist_discoveries: false,
+      persist_discoveries: true,
       freshness: "auto",
       budget: {
         max_iterations: 3,

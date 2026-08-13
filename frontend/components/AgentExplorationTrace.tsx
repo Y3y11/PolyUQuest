@@ -130,6 +130,23 @@ function actionSummary(action: AgentAction): string {
     const reason = typeof details.reason === "string" ? details.reason : "";
     return `${source}${reason ? ` · ${reason}` : ""}`;
   }
+  if (action.action === "polyuquest.publish_patch") {
+    if (action.status === "started") return "正在增量写入页面、证据块和页面链接";
+    if (action.status === "succeeded") {
+      const labels: Record<string, string> = {
+        create: "新建知识快照",
+        update: "更新知识快照",
+        unchanged: "内容未变化，幂等跳过",
+        repair: "修复图与向量索引",
+      };
+      const operation = typeof details.operation === "string" ? details.operation : "";
+      const counts = operation === "unchanged"
+        ? ""
+        : ` · 写入 ${details.blocks_written ?? 0} 块/${details.links_written ?? 0} 链接`;
+      const deleted = Number(details.blocks_deleted || 0) + Number(details.links_deleted || 0);
+      return `${labels[operation] || "增量知识已发布"}${counts}${deleted > 0 ? ` · 清理 ${deleted} 个旧项` : ""}`;
+    }
+  }
   if (action.action === "answer.compose") {
     if (action.status === "started") return `使用 ${details.evidence ?? 0} 个证据块组织回答`;
     if (action.status === "succeeded") return "回答已完成，并保留来源引用";

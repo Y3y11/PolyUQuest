@@ -78,8 +78,14 @@ class ExpandTool:
                         title=page.get("title", ""),
                         edge_type=item.get("link_type", "LINKS_TO") or "LINKS_TO",
                         supports_sub_goals=[tool_input.sub_goal_id],
-                        already_indexed=bool(page.get("last_crawled")),
-                        last_fetched_at=page.get("last_crawled"),
+                        already_indexed=bool(
+                            page.get("content_hash") or page.get("last_crawled")
+                        ),
+                        last_fetched_at=(
+                            page.get("fetched_at") or page.get("last_crawled")
+                        ),
+                        etag=page.get("etag") or None,
+                        last_modified=page.get("last_modified") or None,
                         score=_candidate_score(tool_input, item),
                     )
                     old = candidates.get(url)

@@ -86,6 +86,8 @@ class Neo4jStore:
             w.last_crawled = p.crawled_at,
             w.fetched_at = p.fetched_at,
             w.content_hash = p.content_hash,
+            w.etag = p.etag,
+            w.last_modified = p.last_modified,
             w.source_type = p.source_type,
             w.agent_run_id = p.agent_run_id,
             w.patch_id = p.patch_id,
@@ -102,6 +104,8 @@ class Neo4jStore:
                 "crawled_at": p.get("crawled_at", ""),
                 "fetched_at": p.get("fetched_at", ""),
                 "content_hash": p.get("content_hash", ""),
+                "etag": p.get("etag", ""),
+                "last_modified": p.get("last_modified", ""),
                 "source_type": p.get("source_type", "batch_crawl"),
                 "agent_run_id": p.get("agent_run_id", ""),
                 "patch_id": p.get("patch_id", ""),
@@ -775,6 +779,73 @@ class Neo4jStore:
         with self._driver.session() as session:
             return [dict(r["b"]) for r in session.run(query, url=url)]
 
+    def reconcile_agent_page_snapshot(
+        self,
+        url: str,
+        keep_block_ids: list[str],
+        keep_link_targets: list[str],
+    ) -> tuple[list[str], int]:
+        """Remove relationships absent from the newest Agent page snapshot.
+
+        Blocks are deleted only after their stale CONTAINS edge is removed and
+        no other WebPage still references them. Returns orphan block ids for
+        matching Qdrant cleanup plus the number of removed outgoing links.
+        """
+        def _reconcile(tx):
+            stale_rows = tx.run(
+                """
+                MATCH (w:WebPage {url: $url})-[r:CONTAINS]->(b:Block)
+                WHERE NOT b.block_id IN $keep_block_ids
+                RETURN collect(DISTINCT b.block_id) AS ids
+                """,
+                url=url,
+                keep_block_ids=keep_block_ids,
+            ).single()
+            stale_ids = list(stale_rows["ids"] or []) if stale_rows else []
+            tx.run(
+                """
+                MATCH (w:WebPage {url: $url})-[r:CONTAINS]->(b:Block)
+                WHERE NOT b.block_id IN $keep_block_ids
+                DELETE r
+                """,
+                url=url,
+                keep_block_ids=keep_block_ids,
+            ).consume()
+            orphan_rows = tx.run(
+                """
+                MATCH (b:Block)
+                WHERE b.block_id IN $stale_ids
+                  AND NOT EXISTS { MATCH (:WebPage)-[:CONTAINS]->(b) }
+                RETURN collect(b.block_id) AS ids
+                """,
+                stale_ids=stale_ids,
+            ).single()
+            orphan_ids = list(orphan_rows["ids"] or []) if orphan_rows else []
+            if orphan_ids:
+                tx.run(
+                    """
+                    MATCH (b:Block)
+                    WHERE b.block_id IN $ids
+                    DETACH DELETE b
+                    """,
+                    ids=orphan_ids,
+                ).consume()
+            link_row = tx.run(
+                """
+                MATCH (w:WebPage {url: $url})-[r:LINKS_TO]->(target:WebPage)
+                WHERE NOT target.url IN $keep_link_targets
+                WITH collect(r) AS rels
+                FOREACH (rel IN rels | DELETE rel)
+                RETURN size(rels) AS deleted
+                """,
+                url=url,
+                keep_link_targets=keep_link_targets,
+            ).single()
+            return orphan_ids, int(link_row["deleted"] or 0) if link_row else 0
+
+        with self._driver.session() as session:
+            return session.execute_write(_reconcile)
+
     def get_linked_pages(self, url: str, link_type: str | None = None) -> list[dict[str, Any]]:
         if link_type:
             query = """
@@ -1057,6 +1128,14 @@ class Neo4jStore:
     def get_graph_stats(self) -> dict[str, int]:
         queries = {
             "webpages": "MATCH (w:WebPage) RETURN count(w) AS c",
+            "fetched_webpages": (
+                "MATCH (w:WebPage) WHERE coalesce(w.content_hash, '') <> '' "
+                "RETURN count(w) AS c"
+            ),
+            "stub_webpages": (
+                "MATCH (w:WebPage) WHERE coalesce(w.content_hash, '') = '' "
+                "RETURN count(w) AS c"
+            ),
             "blocks": "MATCH (b:Block) RETURN count(b) AS c",
             "entities": "MATCH (e:Entity) RETURN count(e) AS c",
             "topic_keywords": "MATCH (t:TopicKeyword) RETURN count(t) AS c",

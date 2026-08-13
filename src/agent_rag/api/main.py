@@ -19,6 +19,9 @@ logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    app.state.startup_complete = False
+    app.state.embedding_ready = False
+    app.state.bm25_ready = False
     # Warm BM25 in a background thread so it doesn't block startup. The cold
     # build is several minutes on a full corpus; after the first warm run we
     # persist to disk, so subsequent restarts are near-instant. If a query
@@ -27,6 +30,7 @@ async def _lifespan(app: FastAPI):
     def _warm() -> None:
         try:
             _bm25.warmup()
+            app.state.bm25_ready = True
         except Exception as exc:
             logger.warning("bm25_warmup_failed", error=str(exc))
     threading.Thread(target=_warm, name="bm25-warmup", daemon=True).start()
@@ -35,8 +39,24 @@ async def _lifespan(app: FastAPI):
     # that cost appears unpredictably inside the first user's search action.
     try:
         await asyncio.to_thread(_embedding.warmup)
+        app.state.embedding_ready = True
     except Exception as exc:
         logger.warning("embedding_warmup_failed", error=str(exc))
+    if settings.agent_repair_on_startup:
+        try:
+            from agent_rag.tools.patch_recovery import recover_pending_patches
+
+            report = await asyncio.to_thread(recover_pending_patches)
+            logger.info(
+                "patch_recovery_completed",
+                scanned=report.scanned,
+                recovered=report.recovered,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
+        except Exception as exc:
+            logger.warning("patch_recovery_scan_failed", error=str(exc))
+    app.state.startup_complete = True
     yield
 
 
@@ -72,7 +92,7 @@ def start():
         "agent_rag.api.main:app",
         host=settings.api_host,
         port=settings.api_port,
-        reload=True,
+        reload=settings.api_reload,
     )
 
 

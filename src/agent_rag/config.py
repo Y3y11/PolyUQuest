@@ -62,9 +62,15 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    # Durable graph mutation from the Agent API is opt-in even when a request
-    # sets persist_discoveries=true.
-    agent_allow_persistence: bool = False
+    api_reload: bool = False
+    # Query-driven discovery is a live indexing path: fetched trusted pages
+    # are persisted through audited graph patches unless an environment
+    # explicitly disables writes.
+    agent_allow_persistence: bool = True
+    agent_ledger_path: str = "data/runtime/agent_ledger.sqlite3"
+    agent_repair_on_startup: bool = True
+    agent_repair_max_patches: int = 25
+    agent_patch_max_attempts: int = 5
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
