@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from contextvars import ContextVar, Token
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import structlog
 from qdrant_client import QdrantClient
@@ -163,7 +164,10 @@ class QdrantStore:
             chunk_points = [
                 PointStruct(id=self._str_to_int_id(id_), vector=vec, payload=pay)
                 for id_, vec, pay in zip(
-                    ids[start:end], vectors[start:end], payloads[start:end]
+                    ids[start:end],
+                    vectors[start:end],
+                    payloads[start:end],
+                    strict=True,
                 )
             ]
             self._client.upsert(collection_name=collection, points=chunk_points)
@@ -173,7 +177,8 @@ class QdrantStore:
         """Convert a plain {key: value} dict to a Qdrant Filter (or None)."""
         if not filters:
             return None
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
         return Filter(
             must=[FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filters.items()]
         )
@@ -220,7 +225,7 @@ class QdrantStore:
             return {}
         int_ids = [self._str_to_int_id(i) for i in ids]
         # Build reverse map so we can return by original string id.
-        int_to_str = dict(zip(int_ids, ids))
+        int_to_str = dict(zip(int_ids, ids, strict=True))
 
         def _retrieve():
             return self._client.retrieve(
@@ -289,7 +294,7 @@ class QdrantStore:
             batch_results = _retry_transient(
                 _batch, operation=f"query_batch_points:{col}"
             )
-            for orig_idx, group in zip(indices, batch_results):
+            for orig_idx, group in zip(indices, batch_results, strict=True):
                 results[orig_idx] = [
                     {"id": str(p.id), "score": p.score, "payload": p.payload or {}}
                     for p in group.points
@@ -298,11 +303,25 @@ class QdrantStore:
         return results
 
     def delete_points(self, collection: str, ids: list[str]):
+        if not ids:
+            return
         int_ids = [self._str_to_int_id(i) for i in ids]
         self._client.delete(
             collection_name=collection,
             points_selector=int_ids,
         )
+
+    def update_payloads(
+        self, collection: str, payloads_by_id: dict[str, dict[str, Any]]
+    ) -> int:
+        """Update payload metadata without rewriting or regenerating vectors."""
+        for point_id, payload in payloads_by_id.items():
+            self._client.set_payload(
+                collection_name=collection,
+                payload=payload,
+                points=[self._str_to_int_id(point_id)],
+            )
+        return len(payloads_by_id)
 
     def touch_payload(self, collection: str, ids: list[str], build_id: str) -> int:
         """Update only `last_seen_build_id` for the given string ids, no vector touch.
@@ -361,8 +380,8 @@ class QdrantStore:
         (whose last_seen_build_id is not current). Returns integer Qdrant point ids.
         """
         from qdrant_client.models import (
-            Filter,
             FieldCondition,
+            Filter,
             MatchValue,
         )
 
@@ -393,10 +412,10 @@ class QdrantStore:
     def delete_orphans_by_build_id(self, collection: str, current_build_id: str) -> int:
         """Filter-based delete: drop points whose last_seen_build_id != current."""
         from qdrant_client.models import (
-            Filter,
             FieldCondition,
-            MatchValue,
+            Filter,
             FilterSelector,
+            MatchValue,
         )
 
         # Qdrant doesn't expose an "affected count" via filter delete, so we

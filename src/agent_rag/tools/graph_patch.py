@@ -26,6 +26,7 @@ from agent_rag.tools.schemas import (
 
 if TYPE_CHECKING:
     from agent_rag.freshness import PageLifecycleStore
+    from agent_rag.versioning import PageVersionStore
 
 
 def _now() -> str:
@@ -90,6 +91,7 @@ class PublishPatchTool:
         graph_store_factory: Callable[[], GraphVectorStore] | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
         lifecycle_store: PageLifecycleStore | None = None,
+        version_store: PageVersionStore | None = None,
     ):
         self._observations = observations
         self._patches = patches
@@ -100,6 +102,11 @@ class PublishPatchTool:
 
             lifecycle_store = page_lifecycle_store
         self._lifecycle_store = lifecycle_store
+        if version_store is None:
+            from agent_rag.versioning import page_version_store
+
+            version_store = page_version_store
+        self._version_store = version_store
 
     def run(self, tool_input: PublishPatchInput) -> PublishPatchOutput:
         patch = self._patches.get(tool_input.patch_id)
@@ -122,6 +129,7 @@ class PublishPatchTool:
         patch.updated_at = _now()
         self._patches.put(patch)
         graph_store = None
+        version = None
         try:
             if self._graph_store_factory is None:
                 from agent_rag.storage.graph_vector_store import GraphVectorStore
@@ -174,8 +182,37 @@ class PublishPatchTool:
             existing_block_ids = {
                 block.get("block_id", "") for block in existing_blocks
             }
+            from agent_rag.versioning import PageVersion, build_block_diff
+
+            new_plan = build_block_diff(
+                existing_blocks,
+                blocks,
+                old_page=current_page,
+                new_page=page,
+            )
+            version = self._version_store.put_planned(
+                PageVersion(
+                    patch_id=patch.patch_id,
+                    observation_id=patch.observation_id,
+                    run_id=patch.run_id,
+                    source_url=patch.source_url,
+                    previous_content_hash=previous_hash,
+                    content_hash=patch.content_hash,
+                    diff=new_plan,
+                )
+            )
+            plan = version.diff
+            version.status = "publishing"
+            version.error = None
+            self._version_store.save(version)
+
+            lookup_ids = list(
+                dict.fromkeys(
+                    block_ids + [item.old_id for item in plan.relocated]
+                )
+            )
             existing_vectors = graph_store.qdrant.retrieve_vectors(
-                "blocks", block_ids
+                "blocks", lookup_ids
             )
             page_vector = graph_store.qdrant.retrieve_vectors(
                 "webpages", [patch.source_url]
@@ -191,19 +228,24 @@ class PublishPatchTool:
                 patch.operation = "update"
             elif (
                 existing_block_ids == set(block_ids)
-                and len(existing_vectors) == len(block_ids)
+                and all(item in existing_vectors for item in block_ids)
                 and page_vector_ok
+                and not plan.page_semantic_changed
+                and not plan.write_ids
             ):
                 patch.operation = "unchanged"
                 patch.status = "published"
                 patch.updated_at = _now()
                 self._patches.put(patch)
+                version.status = "published"
+                self._version_store.save(version)
                 lifecycle = self._register_lifecycle(patch, observation)
                 graph_store.neo4j.update_webpage_lifecycle(
                     patch.source_url, lifecycle.model_dump()
                 )
                 return PublishPatchOutput(
                     patch=patch,
+                    version_id=version.version_id,
                     read_after_write_ok=True,
                 )
             else:
@@ -215,17 +257,56 @@ class PublishPatchTool:
                 embedder = embed_texts
             else:
                 embedder = self._embedder
-            page_embeddings = embedder([page_text or patch.source_url])
-            block_embeddings = embedder(
-                [
-                    f"{block.get('heading_context', '')}\n{block.get('content', '')}"
-                    for block in blocks
-                ]
-            )
             build_id = f"agent:{patch.run_id}:{patch.patch_id}"
-            graph_store.bulk_store_webpages([page], page_embeddings, build_id)
+            must_embed_page = bool(page_text) and (
+                current_page is None
+                or plan.page_semantic_changed
+                or not page_vector_ok
+            )
+            page_embedding_count = 0
+            if must_embed_page:
+                page_embeddings = embedder([page_text or patch.source_url])
+                page_embedding_count = 1
+                graph_store.bulk_store_webpages([page], page_embeddings, build_id)
+            else:
+                graph_store.bulk_update_webpage_metadata([page], build_id)
             graph_store.bulk_store_links(links, build_id)
-            graph_store.bulk_store_blocks(blocks, block_embeddings, build_id)
+
+            block_by_id = {block["block_id"]: block for block in blocks}
+            vectors_by_id: dict[str, list[float]] = {}
+            reused_count = 0
+            for relocation in plan.relocated:
+                if relocation.new_id in existing_vectors:
+                    vectors_by_id[relocation.new_id] = existing_vectors[relocation.new_id]
+                elif relocation.old_id in existing_vectors:
+                    vectors_by_id[relocation.new_id] = existing_vectors[relocation.old_id]
+                    reused_count += 1
+
+            # Same-ID modified blocks still have their old vectors; they must be
+            # regenerated. Any current block whose vector is missing is repair work,
+            # regardless of whether its content or metadata changed in this patch.
+            embed_ids = [
+                item
+                for item in block_ids
+                if item in plan.modified_ids
+                or (item not in existing_vectors and item not in vectors_by_id)
+            ]
+            embed_ids = list(dict.fromkeys(embed_ids))
+            if embed_ids:
+                generated = embedder(
+                    [
+                        f"{block_by_id[item].get('heading_context', '')}\n"
+                        f"{block_by_id[item].get('content', '')}"
+                        for item in embed_ids
+                    ]
+                )
+                vectors_by_id.update(dict(zip(embed_ids, generated, strict=True)))
+
+            write_ids = plan.write_ids | set(embed_ids)
+            write_blocks = [block for block in blocks if block["block_id"] in write_ids]
+            graph_store.bulk_store_blocks_incremental(
+                write_blocks, vectors_by_id, build_id
+            )
 
             orphan_block_ids, links_deleted = (
                 graph_store.neo4j.reconcile_agent_page_snapshot(
@@ -257,14 +338,29 @@ class PublishPatchTool:
                 patch.error = "Read-after-write verification failed"
             self._patches.put(patch)
             if read_ok:
+                version.status = "published"
+                version.page_embeddings = page_embedding_count
+                version.block_embeddings = len(embed_ids)
+                version.reused_block_vectors = reused_count
+                version.blocks_written = len(write_blocks)
+                version.blocks_deleted = len(orphan_block_ids)
+                self._version_store.save(version)
                 lifecycle = self._register_lifecycle(patch, observation)
                 graph_store.neo4j.update_webpage_lifecycle(
                     patch.source_url, lifecycle.model_dump()
                 )
+            else:
+                version.status = "repair_required"
+                version.error = patch.error
+                self._version_store.save(version)
             return PublishPatchOutput(
                 patch=patch,
+                version_id=version.version_id,
                 webpages_written=1,
-                blocks_written=len(blocks),
+                blocks_written=len(write_blocks),
+                page_embeddings=page_embedding_count,
+                block_embeddings=len(embed_ids),
+                blocks_reused=reused_count,
                 links_written=len(links),
                 blocks_deleted=len(orphan_block_ids),
                 links_deleted=links_deleted,
@@ -277,6 +373,10 @@ class PublishPatchTool:
             patch.updated_at = _now()
             patch.error = str(exc)
             self._patches.put(patch)
+            if version is not None:
+                version.status = "repair_required"
+                version.error = str(exc)
+                self._version_store.save(version)
             raise
         finally:
             if graph_store is not None:

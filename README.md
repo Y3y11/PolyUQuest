@@ -172,6 +172,14 @@ updates `last_validated_at` without re-embedding. Operations are available under
 `/api/freshness/*`; set `FRESHNESS_WORKER_ENABLED=false` for an externally
 scheduled deployment.
 
+Changed pages are published with deterministic DOM Block Diff. Only modified,
+added, or missing-vector blocks are embedded; structurally relocated blocks
+reuse their existing vectors, and unchanged page metadata reuses the page
+vector. Every Patch has a durable PageVersion audit record. Inspect it through:
+
+- `GET /api/indexing/versions` and `/api/indexing/versions/{version_id}`;
+- `GET /api/indexing/version-stats` for embedding savings and change ratios.
+
 Agent query analysis uses an open-domain `entity + qualifier + intent +
 required_claim` contract. Institution names and seed labels live in connector
 configuration; the core planner/evaluator does not contain PolyU department or

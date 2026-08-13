@@ -80,7 +80,9 @@ class GraphVectorStore:
     def store_relation_vector(
         self, rel_id: str, embedding: list[float], payload: dict[str, Any]
     ):
-        self.qdrant.upsert_points("relations", ids=[rel_id], vectors=[embedding], payloads=[payload])
+        self.qdrant.upsert_points(
+            "relations", ids=[rel_id], vectors=[embedding], payloads=[payload]
+        )
 
     def store_topic_keyword(self, keyword: str, embedding: list[float]):
         self.neo4j.upsert_topic_keyword(keyword)
@@ -113,7 +115,7 @@ class GraphVectorStore:
         keep_pages: list[dict[str, Any]] = []
         keep_embs: list[list[float]] = []
         skipped = 0
-        for p, emb in zip(pages, embeddings):
+        for p, emb in zip(pages, embeddings, strict=True):
             has_signal = (p.get("title") or "").strip() or (
                 p.get("meta_description") or ""
             ).strip()
@@ -150,6 +152,42 @@ class GraphVectorStore:
                 }
                 for p in keep_pages
             ],
+        )
+
+    @staticmethod
+    def _webpage_payload(page: dict[str, Any], build_id: str) -> dict[str, Any]:
+        return {
+            "url": page["url"],
+            "page_type": page.get("page_type", "other"),
+            "department": page.get("department", ""),
+            "title": page.get("title", ""),
+            "fetched_at": page.get("fetched_at", ""),
+            "content_hash": page.get("content_hash", ""),
+            "source_type": page.get("source_type", "batch_crawl"),
+            "agent_run_id": page.get("agent_run_id", ""),
+            "patch_id": page.get("patch_id", ""),
+            "patch_status": page.get("patch_status", ""),
+            "last_seen_build_id": build_id,
+        }
+
+    def bulk_update_webpage_metadata(
+        self, pages: list[dict[str, Any]], build_id: str
+    ) -> None:
+        """Refresh graph and vector payload while retaining the existing vector."""
+        if not pages:
+            return
+        self.neo4j.bulk_upsert_webpages(pages, build_id=build_id)
+        vector_pages = [
+            page
+            for page in pages
+            if (page.get("title") or "").strip()
+            or (page.get("meta_description") or "").strip()
+        ]
+        if not vector_pages:
+            return
+        self.qdrant.update_payloads(
+            "webpages",
+            {p["url"]: self._webpage_payload(p, build_id) for p in vector_pages},
         )
 
     def bulk_store_links(self, links: list[dict[str, Any]], build_id: str):
@@ -199,6 +237,56 @@ class GraphVectorStore:
                 for b in blocks
             ],
         )
+
+    @staticmethod
+    def _block_payload(block: dict[str, Any], build_id: str) -> dict[str, Any]:
+        return {
+            "block_id": block["block_id"],
+            "url": block.get("url", ""),
+            "source_urls": block.get("source_urls") or [block.get("url", "")],
+            "heading_context": block.get("heading_context", ""),
+            "token_count": block.get("token_count", 0),
+            "content": block.get("content", ""),
+            "fetched_at": block.get("fetched_at", ""),
+            "content_hash": block.get("content_hash", ""),
+            "source_type": block.get("source_type", "batch_crawl"),
+            "agent_run_id": block.get("agent_run_id", ""),
+            "patch_id": block.get("patch_id", ""),
+            "patch_status": block.get("patch_status", ""),
+            "last_seen_build_id": build_id,
+        }
+
+    def bulk_store_blocks_incremental(
+        self,
+        blocks: list[dict[str, Any]],
+        vectors_by_id: dict[str, list[float]],
+        build_id: str,
+    ) -> None:
+        """Upsert only blocks selected by a diff plan.
+
+        Blocks with a supplied vector get a Qdrant upsert. Metadata-only blocks
+        retain their vector and receive only a payload update.
+        """
+        if not blocks:
+            return
+        self.neo4j.bulk_upsert_blocks(blocks, build_id=build_id)
+        vector_blocks = [b for b in blocks if b["block_id"] in vectors_by_id]
+        metadata_blocks = [b for b in blocks if b["block_id"] not in vectors_by_id]
+        if vector_blocks:
+            self.qdrant.upsert_points(
+                "blocks",
+                ids=[b["block_id"] for b in vector_blocks],
+                vectors=[vectors_by_id[b["block_id"]] for b in vector_blocks],
+                payloads=[self._block_payload(b, build_id) for b in vector_blocks],
+            )
+        if metadata_blocks:
+            self.qdrant.update_payloads(
+                "blocks",
+                {
+                    b["block_id"]: self._block_payload(b, build_id)
+                    for b in metadata_blocks
+                },
+            )
 
     def bulk_store_entities(
         self,

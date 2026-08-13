@@ -82,6 +82,14 @@ Web 天然适合作为在线知识来源：它是组织信息对外/对内发布
 
 解决的问题：知识更新不再依赖用户提出“最新”问题，也不需要固定周期全量重建；稳定页面自动降低刷新频率，变化或热点页面更快复查。刷新任务具有 lease、失败退避、重启恢复、quarantine、pause/resume 和运维统计，检索会过滤不再可信的旧快照。
 
+### 迭代 7：DOM Block Diff 与局部增量索引
+
+Freshness Worker 发现页面变化后，不再默认重做整页所有向量。发布器先对当前图快照和新 Observation 生成确定性 Diff，区分 unchanged、metadata changed、modified、relocated、added 和 deleted；只为 modified/added 或缺失向量的块生成 Embedding，DOM 路径位移但语义未变时复用旧向量。页面标题和描述不变时同样复用页面向量。
+
+每次 Patch 对应 SQLite PageVersion，记录 Diff、状态、Embedding/复用/写入计数和失败原因。发布仍按“先写新数据、后清理旧数据、最后读后校验”执行，Version 与 Patch 任一失败都会进入 repair_required，避免出现知识已部分改变但审计显示成功的情况。
+
+解决的问题：局部网页变化不再放大全页模型调用与双存储写入；更新成本可量化，DOM 位移可识别，失败版本可追踪并可幂等修复。
+
 ## 5. 当前总体架构
 
 ```text
@@ -100,6 +108,8 @@ Next.js UI
 Index Worker
   -> lease / retry / dead letter
   -> PublishPatchTool
+  -> PageVersion + deterministic DOM Block Diff
+  -> changed-only Embedding + relocated vector reuse
   -> Neo4j WebPage-Block-Entity graph
   -> Qdrant vectors
   -> read-after-write verification
@@ -133,7 +143,7 @@ Freshness Worker
 
 ## 8. 后续路线
 
-- DOM Diff 与变化 Block 的局部 Embedding；
+- PageVersion 回滚与 Diff 可视化；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
 - OpenTelemetry/Prometheus 与运营面板；
 - 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
@@ -147,6 +157,7 @@ Freshness Worker
 - `docs/ASYNC_INCREMENTAL_INDEXING_PRD.md`：异步入图；
 - `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
 - `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
+- `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
 
 简历写法和面试准备将在架构能力稳定、关键指标补齐后写入本文后续章节，避免把尚未验证的工程指标提前包装为成果。

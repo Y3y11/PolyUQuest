@@ -209,8 +209,12 @@ class PublishPatchInput(BaseModel):
 
 class PublishPatchOutput(BaseModel):
     patch: GraphPatch
+    version_id: str | None = None
     webpages_written: int = 0
     blocks_written: int = 0
+    page_embeddings: int = 0
+    block_embeddings: int = 0
+    blocks_reused: int = 0
     links_written: int = 0
     blocks_deleted: int = 0
     links_deleted: int = 0

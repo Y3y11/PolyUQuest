@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Query
 from agent_rag.indexing.outbox import IndexJob, IndexJobStatus, index_outbox
 from agent_rag.quality import PageQualityDecision, page_quality_store
 from agent_rag.quality.gate import QualityAction
+from agent_rag.versioning import PageVersion, page_version_store
+from agent_rag.versioning.store import VersionStatus
 
 router = APIRouter()
 
@@ -65,3 +67,27 @@ def get_quality_decision(decision_id: str) -> PageQualityDecision:
 @router.get("/indexing/quality/stats")
 def get_quality_stats() -> dict[str, int | float]:
     return page_quality_store.stats()
+
+
+@router.get("/indexing/versions", response_model=list[PageVersion])
+def list_page_versions(
+    source_url: str | None = None,
+    status: VersionStatus | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[PageVersion]:
+    return page_version_store.list(
+        source_url=source_url, status=status, limit=limit
+    )
+
+
+@router.get("/indexing/version-stats")
+def get_page_version_stats() -> dict[str, int | float]:
+    return page_version_store.stats()
+
+
+@router.get("/indexing/versions/{version_id}", response_model=PageVersion)
+def get_page_version(version_id: str) -> PageVersion:
+    version = page_version_store.get(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Page version not found")
+    return version
