@@ -36,3 +36,14 @@ quality:
     uniqueness: 0.12
     query_relevance: 0.22
     metadata: 0.08
+
+freshness:
+  policy_version: adaptive-freshness-v1
+  min_ttl_hours: 6
+  default_ttl_hours: 168
+  max_ttl_hours: 720
+  unchanged_multiplier: 1.5
+  changed_multiplier: 0.5
+  hot_access_threshold: 10
+  hot_access_multiplier: 0.5
+  failure_backoff_hours: 1

@@ -96,6 +96,12 @@ class Neo4jStore:
             w.quality_score = p.quality_score,
             w.quality_policy_version = p.quality_policy_version,
             w.quality_decision_id = p.quality_decision_id,
+            w.lifecycle_status = p.lifecycle_status,
+            w.last_validated_at = p.last_validated_at,
+            w.next_check_at = p.next_check_at,
+            w.current_ttl_hours = p.current_ttl_hours,
+            w.change_count = p.change_count,
+            w.unchanged_count = p.unchanged_count,
             w.last_seen_build_id = $build_id
         """
         rows = [
@@ -118,6 +124,12 @@ class Neo4jStore:
                 "quality_score": p.get("quality_score", 0.0),
                 "quality_policy_version": p.get("quality_policy_version", ""),
                 "quality_decision_id": p.get("quality_decision_id", ""),
+                "lifecycle_status": p.get("lifecycle_status", ""),
+                "last_validated_at": p.get("last_validated_at", ""),
+                "next_check_at": p.get("next_check_at", ""),
+                "current_ttl_hours": p.get("current_ttl_hours", 0.0),
+                "change_count": p.get("change_count", 0),
+                "unchanged_count": p.get("unchanged_count", 0),
             }
             for p in pages
         ]
@@ -1089,6 +1101,41 @@ class Neo4jStore:
                 rec["u"]: dict(rec["w"])
                 for rec in session.run(query, urls=list(urls))
             }
+
+    def list_indexed_webpages(self, limit: int = 10000) -> list[dict[str, Any]]:
+        query = """
+        MATCH (w:WebPage)
+        WHERE coalesce(w.content_hash, '') <> ''
+        RETURN w ORDER BY coalesce(w.fetched_at, w.last_crawled, '') DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return [dict(row["w"]) for row in session.run(query, limit=limit)]
+
+    def update_webpage_lifecycle(
+        self, source_url: str, lifecycle: dict[str, Any]
+    ) -> None:
+        """Mirror scheduler state onto an existing WebPage for retrieval filters."""
+        query = """
+        MATCH (w:WebPage {url: $url})
+        SET w.lifecycle_status = $status,
+            w.last_validated_at = $last_validated_at,
+            w.next_check_at = $next_check_at,
+            w.current_ttl_hours = $current_ttl_hours,
+            w.change_count = $change_count,
+            w.unchanged_count = $unchanged_count
+        """
+        with self._driver.session() as session:
+            session.run(
+                query,
+                url=source_url,
+                status=lifecycle.get("status", "active"),
+                last_validated_at=lifecycle.get("last_validated_at", ""),
+                next_check_at=lifecycle.get("next_check_at", ""),
+                current_ttl_hours=lifecycle.get("current_ttl_hours", 0.0),
+                change_count=lifecycle.get("change_count", 0),
+                unchanged_count=lifecycle.get("unchanged_count", 0),
+            )
 
     def get_linked_pages_batch(
         self, urls: list[str]

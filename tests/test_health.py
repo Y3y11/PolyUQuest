@@ -25,6 +25,7 @@ class HealthEndpointTests(unittest.TestCase):
                     embedding_ready=False,
                     bm25_ready=True,
                     index_worker=SimpleNamespace(is_running=True),
+                    freshness_worker=SimpleNamespace(is_running=True),
                 )
             )
         )
@@ -42,11 +43,31 @@ class HealthEndpointTests(unittest.TestCase):
                     embedding_ready=True,
                     bm25_ready=True,
                     index_worker=SimpleNamespace(is_running=True),
+                    freshness_worker=SimpleNamespace(is_running=True),
                 )
             )
         )
         response = readiness(request)
         self.assertEqual(response.status, "ok")
+        self.assertTrue(response.freshness_worker)
+
+    @patch("agent_rag.api.routes.health_router._dependency_status")
+    def test_readiness_requires_freshness_worker(self, dependencies) -> None:
+        dependencies.return_value = (True, True)
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    startup_complete=True,
+                    embedding_ready=True,
+                    bm25_ready=True,
+                    index_worker=SimpleNamespace(is_running=True),
+                    freshness_worker=SimpleNamespace(is_running=False),
+                )
+            )
+        )
+        response = readiness(request)
+        self.assertIsInstance(response, JSONResponse)
+        self.assertEqual(response.status_code, 503)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from agent_rag.config import thresholds_config
+from agent_rag.freshness import PageLifecycleStore, page_lifecycle_store
 from agent_rag.llm.client import LLMClient
 from agent_rag.retrieval._embedding import embed_query
 from agent_rag.retrieval._rewriter import reset_router_confidence, set_router_confidence
@@ -50,12 +51,14 @@ class SearchTool:
         llm_factory: Callable[[], LLMClient] = LLMClient,
         embedder: Callable[[str], list[float]] = embed_query,
         expand_tool: ExpandTool | None = None,
+        lifecycle_store: PageLifecycleStore = page_lifecycle_store,
     ):
         self._neo4j_factory = neo4j_factory
         self._qdrant_factory = qdrant_factory
         self._llm_factory = llm_factory
         self._embedder = embedder
         self._expand_tool = expand_tool or ExpandTool(neo4j_factory)
+        self._lifecycle_store = lifecycle_store
 
     def run(self, tool_input: SearchInput) -> SearchOutput:
         started = time.perf_counter()
@@ -132,14 +135,35 @@ class SearchTool:
             raw_blocks = result.get("blocks", [])
             block_ids = [b.get("block_id", "") for b in raw_blocks if b.get("block_id")]
             pages = neo4j.get_webpages_for_blocks_batch(block_ids)
+            source_urls = {
+                str(block.get("source_url") or pages.get(block_id, {}).get("url", ""))
+                for block in raw_blocks
+                if (block_id := block.get("block_id", ""))
+            }
+            lifecycle_targets = self._lifecycle_store.get_many(source_urls)
             evidence: list[EvidenceBlock] = []
             for block in raw_blocks:
                 block_id = block.get("block_id", "")
                 page = pages.get(block_id, {})
+                source_url = block.get("source_url") or page.get("url", "")
+                lifecycle = lifecycle_targets.get(source_url)
+                lifecycle_status = (
+                    lifecycle.status
+                    if lifecycle is not None
+                    else page.get("lifecycle_status", "active")
+                )
+                if lifecycle_status == "quarantined":
+                    continue
                 page_type = page.get("page_type", "other")
                 if tool_input.page_types and page_type not in tool_input.page_types:
                     continue
-                fetched_at = page.get("fetched_at") or page.get("last_crawled")
+                fetched_at = (
+                    lifecycle.last_validated_at
+                    if lifecycle is not None and lifecycle.last_validated_at
+                    else page.get("last_validated_at")
+                    or page.get("fetched_at")
+                    or page.get("last_crawled")
+                )
                 if tool_input.freshness_after and fetched_at:
                     try:
                         if str(fetched_at) < tool_input.freshness_after.isoformat():
@@ -153,7 +177,7 @@ class SearchTool:
                         block_id=block_id,
                         content=block.get("content", ""),
                         heading_context=block.get("heading_context", ""),
-                        source_url=block.get("source_url") or page.get("url", ""),
+                        source_url=source_url,
                         source_title=block.get("source_title") or page.get("title", ""),
                         page_type=page_type,
                         fetched_at=fetched_at,
@@ -170,6 +194,10 @@ class SearchTool:
                 )
                 if len(evidence) >= tool_input.top_k:
                     break
+
+            self._lifecycle_store.record_access_many(
+                item.source_url for item in evidence
+            )
 
             frontier = []
             expand_trace: list[ToolTraceStep] = []

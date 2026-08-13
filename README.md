@@ -128,6 +128,8 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/indexing/jobs` | Async indexing jobs and status |
 | `GET`  | `/api/indexing/quality/decisions` | Audited page-quality decisions |
 | `GET`  | `/api/indexing/quality/stats` | Index/evidence-only/discard counts |
+| `GET`  | `/api/freshness/targets` | Adaptive page lifecycle targets |
+| `GET`  | `/api/freshness/stats` | Refresh schedule and staleness metrics |
 | `GET`  | `/api/health/live` | Process liveness without dependency access |
 | `GET`  | `/api/health/ready` | Startup and core dependency readiness |
 | `GET`  | `/api/health/dependencies` | Neo4j and Qdrant status |
@@ -161,6 +163,14 @@ lease-based retries. Operational APIs:
 
 Set `AGENT_ASYNC_INDEXING=false` to fall back to synchronous publishing, or
 `INDEX_WORKER_ENABLED=false` when running a separately managed worker.
+
+Indexed pages are registered with an adaptive Freshness Worker. It uses
+ETag/Last-Modified conditional requests, expands the validation interval for
+stable pages, shortens it for changing or frequently accessed pages, and sends
+changed snapshots back through the quality gate and asynchronous Outbox. A 304
+updates `last_validated_at` without re-embedding. Operations are available under
+`/api/freshness/*`; set `FRESHNESS_WORKER_ENABLED=false` for an externally
+scheduled deployment.
 
 Agent query analysis uses an open-domain `entity + qualifier + intent +
 required_claim` contract. Institution names and seed labels live in connector

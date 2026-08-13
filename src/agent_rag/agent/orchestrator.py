@@ -23,6 +23,7 @@ from agent_rag.agent.schemas import (
 )
 from agent_rag.config import agent_config, llm_config, settings, stage_model
 from agent_rag.indexing.outbox import IndexOutbox, index_outbox
+from agent_rag.freshness import PageLifecycleStore, page_lifecycle_store
 from agent_rag.quality import PageQualityGate, PageQualityStore, page_quality_store
 from agent_rag.tools._ranking import expanded_query, frontier_score, lexical_score
 from agent_rag.tools.observations import ObservationStore, observation_store
@@ -121,6 +122,7 @@ class QueryDrivenAgent:
         indexing_outbox: IndexOutbox = index_outbox,
         quality_gate: PageQualityGate | None = None,
         quality_store: PageQualityStore = page_quality_store,
+        lifecycle_store: PageLifecycleStore = page_lifecycle_store,
     ):
         if search_tool is None:
             from agent_rag.tools.search import SearchTool
@@ -159,6 +161,7 @@ class QueryDrivenAgent:
         self.indexing_outbox = indexing_outbox
         self.quality_gate = quality_gate or PageQualityGate()
         self.quality_store = quality_store
+        self.lifecycle_store = lifecycle_store
 
     async def run(
         self, request: AgentQueryRequest, emit: EmitCallback | None = None
@@ -459,6 +462,16 @@ class QueryDrivenAgent:
                 if fetched.not_modified:
                     summary.pages_revalidated += 1
                     summary.conditional_cache_hits += 1
+                    try:
+                        lifecycle = await asyncio.to_thread(
+                            self.lifecycle_store.mark_query_validated_unchanged,
+                            fetched.metadata.final_url,
+                        )
+                        snapshot.page["last_validated_at"] = (
+                            lifecycle.last_validated_at
+                        )
+                    except KeyError:
+                        pass
                 trace.extend(fetched.trace)
                 await record(
                     "web.fetch_trusted_page",
@@ -573,7 +586,8 @@ class QueryDrivenAgent:
                             source_title=str(snapshot.page.get("title", "")),
                             page_type=str(snapshot.page.get("page_type", "other")),
                             fetched_at=(
-                                snapshot.page.get("fetched_at")
+                                snapshot.page.get("last_validated_at")
+                                or snapshot.page.get("fetched_at")
                                 or snapshot.page.get("last_crawled")
                             ),
                             content_hash=snapshot.page.get("content_hash") or None,

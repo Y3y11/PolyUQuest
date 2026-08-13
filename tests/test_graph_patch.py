@@ -25,6 +25,9 @@ class _FakeNeo4j:
         self.blocks[url] = [{"block_id": item} for item in keep_block_ids]
         return sorted(old_ids - set(keep_block_ids)), 1 if old_ids else 0
 
+    def update_webpage_lifecycle(self, url, lifecycle):
+        self.pages[url].update(lifecycle)
+
 
 class _FakeQdrant:
     def __init__(self):
@@ -87,6 +90,19 @@ def _observation_store(content_hash: str = "new", block_id: str = "new-block"):
     return observations
 
 
+class _FakeLifecycleStore:
+    def __init__(self):
+        self.registrations = []
+
+    def register_indexed(self, source_url, content_hash, **kwargs):
+        self.registrations.append((source_url, content_hash, kwargs))
+        return type(
+            "Target",
+            (),
+            {"model_dump": lambda self: {"status": "active"}},
+        )()
+
+
 class StagePatchTests(unittest.TestCase):
     def test_patch_keeps_run_and_source_provenance(self) -> None:
         observations = ObservationStore()
@@ -137,23 +153,26 @@ class PublishPatchTests(unittest.TestCase):
         observations = _observation_store()
         patches = PatchStore()
         stage = StagePatchTool(observations=observations, patches=patches)
+        lifecycle = _FakeLifecycleStore()
         publish = PublishPatchTool(
             observations=observations,
             patches=patches,
             graph_store_factory=lambda: graph,
             embedder=lambda texts: [[1.0] for _ in texts],
+            lifecycle_store=lifecycle,
         )
         patch = stage.run(StagePatchInput(observation_id="obs-1", run_id="run-1"))
-        return publish, patch
+        return publish, patch, lifecycle
 
     def test_first_snapshot_is_created(self) -> None:
         graph = _FakeGraphStore()
-        publish, patch = self._tools(graph)
+        publish, patch, lifecycle = self._tools(graph)
         result = publish.run(PublishPatchInput(patch_id=patch.patch_id))
         self.assertEqual(result.patch.operation, "create")
         self.assertTrue(result.read_after_write_ok)
         self.assertEqual(result.blocks_written, 1)
         self.assertTrue(graph.initialized)
+        self.assertEqual(len(lifecycle.registrations), 1)
 
     def test_unchanged_snapshot_skips_embedding_and_write(self) -> None:
         graph = _FakeGraphStore()
@@ -162,13 +181,14 @@ class PublishPatchTests(unittest.TestCase):
         graph.neo4j.blocks[url] = [{"block_id": "new-block"}]
         graph.qdrant.vectors["webpages"].add(url)
         graph.qdrant.vectors["blocks"].add("new-block")
-        publish, patch = self._tools(graph)
+        publish, patch, lifecycle = self._tools(graph)
         publish._embedder = lambda _texts: (_ for _ in ()).throw(  # noqa: SLF001
             AssertionError("unchanged snapshots must not be embedded")
         )
         result = publish.run(PublishPatchInput(patch_id=patch.patch_id))
         self.assertEqual(result.patch.operation, "unchanged")
         self.assertEqual(result.blocks_written, 0)
+        self.assertEqual(len(lifecycle.registrations), 1)
 
     def test_changed_snapshot_removes_orphan_vectors(self) -> None:
         graph = _FakeGraphStore()
@@ -177,11 +197,12 @@ class PublishPatchTests(unittest.TestCase):
         graph.neo4j.blocks[url] = [{"block_id": "old-block"}]
         graph.qdrant.vectors["webpages"].add(url)
         graph.qdrant.vectors["blocks"].add("old-block")
-        publish, patch = self._tools(graph)
+        publish, patch, lifecycle = self._tools(graph)
         result = publish.run(PublishPatchInput(patch_id=patch.patch_id))
         self.assertEqual(result.patch.operation, "update")
         self.assertEqual(result.blocks_deleted, 1)
         self.assertIn(("blocks", ["old-block"]), graph.qdrant.deleted)
+        self.assertEqual(len(lifecycle.registrations), 1)
 
 
 if __name__ == "__main__":

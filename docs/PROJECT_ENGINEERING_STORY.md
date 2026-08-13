@@ -76,6 +76,12 @@ Web 天然适合作为在线知识来源：它是组织信息对外/对内发布
 
 解决的问题：在线探索不再把每个成功响应都无条件写入知识库；薄内容可临时支撑回答但不污染长期索引，空壳或无相关证据页面被丢弃。所有决策进入 SQLite 审计账本和前端探索轨迹，策略阈值可配置、可回放。
 
+### 迭代 6：自适应知识新鲜度与页面生命周期
+
+为已索引页面建立持久化 lifecycle target，通过页面变化历史、访问热度、质量价值与失败状态动态计算 TTL。Freshness Worker 使用 ETag/Last-Modified 条件请求后台再验证：304 或相同 hash 只更新 `last_validated_at`，内容变化才重新经过质量门控和异步 Outbox。
+
+解决的问题：知识更新不再依赖用户提出“最新”问题，也不需要固定周期全量重建；稳定页面自动降低刷新频率，变化或热点页面更快复查。刷新任务具有 lease、失败退避、重启恢复、quarantine、pause/resume 和运维统计，检索会过滤不再可信的旧快照。
+
 ## 5. 当前总体架构
 
 ```text
@@ -97,6 +103,12 @@ Index Worker
   -> Neo4j WebPage-Block-Entity graph
   -> Qdrant vectors
   -> read-after-write verification
+
+Freshness Worker
+  -> adaptive TTL + durable lease
+  -> HTTP conditional revalidation
+  -> unchanged: validate only / changed: quality gate + Outbox
+  -> retry / quarantine / pause-resume lifecycle
 ```
 
 ## 6. 技术选型理由
@@ -121,7 +133,6 @@ Index Worker
 
 ## 8. 后续路线
 
-- 页面 TTL、变化频率与价值驱动的 Freshness Scheduler；
 - DOM Diff 与变化 Block 的局部 Embedding；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
 - OpenTelemetry/Prometheus 与运营面板；
@@ -135,6 +146,7 @@ Index Worker
 - `docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`：可靠性优化；
 - `docs/ASYNC_INCREMENTAL_INDEXING_PRD.md`：异步入图；
 - `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
+- `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
 
 简历写法和面试准备将在架构能力稳定、关键指标补齐后写入本文后续章节，避免把尚未验证的工程指标提前包装为成果。

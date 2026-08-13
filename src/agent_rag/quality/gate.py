@@ -60,6 +60,8 @@ class PageQualityGate:
         self,
         observation: ObservationRecord,
         fetched: FetchOutput,
+        *,
+        require_query_relevance: bool = True,
     ) -> PageQualityDecision:
         cfg = self.config
         contents = [
@@ -72,9 +74,19 @@ class PageQualityGate:
         counts = Counter(contents)
         duplicate_blocks = sum(count - 1 for count in counts.values() if count > 1)
         link_count = len(observation.discovered_links)
+        relevant_blocks = (
+            fetched.evidence_gain.relevant_blocks
+            if require_query_relevance
+            else len(observation.blocks)
+        )
+        query_coverage = (
+            fetched.evidence_gain.lexical_coverage
+            if require_query_relevance
+            else float(cfg.get("target_query_coverage", 0.35))
+        )
         features = PageQualityFeatures(
             block_count=len(observation.blocks),
-            relevant_block_count=fetched.evidence_gain.relevant_blocks,
+            relevant_block_count=relevant_blocks,
             total_text_chars=total_chars,
             total_tokens=sum(
                 int(block.get("token_count", 0) or 0)
@@ -89,7 +101,7 @@ class PageQualityGate:
             links_per_1k_chars=round(link_count * 1000 / max(total_chars, 1), 4),
             duplicate_block_ratio=round(duplicate_blocks / max(len(contents), 1), 4),
             largest_block_share=round(max(lengths, default=0) / max(total_chars, 1), 4),
-            query_coverage=fetched.evidence_gain.lexical_coverage,
+            query_coverage=query_coverage,
             title_present=bool(str(observation.metadata.get("title", "")).strip()),
             content_hash_present=bool(
                 str(observation.metadata.get("content_hash", "")).strip()

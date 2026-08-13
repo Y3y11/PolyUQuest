@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     index_job_retry_base_seconds: float = 2.0
     index_job_retry_max_seconds: float = 300.0
     index_job_retention_days: int = 30
+    freshness_worker_enabled: bool = True
+    freshness_worker_poll_seconds: float = 5.0
+    freshness_worker_lease_seconds: int = 120
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -135,6 +138,10 @@ class Settings(BaseSettings):
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:
             raise ValueError("INDEX_JOB_MAX_ATTEMPTS must be positive")
+        if self.freshness_worker_poll_seconds <= 0:
+            raise ValueError("FRESHNESS_WORKER_POLL_SECONDS must be positive")
+        if self.freshness_worker_lease_seconds <= 0:
+            raise ValueError("FRESHNESS_WORKER_LEASE_SECONDS must be positive")
 
         if self.cors_allow_credentials:
             if "*" in origins:

@@ -24,6 +24,9 @@ from agent_rag.tools.schemas import (
     StagePatchInput,
 )
 
+if TYPE_CHECKING:
+    from agent_rag.freshness import PageLifecycleStore
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -86,11 +89,17 @@ class PublishPatchTool:
         patches: PatchStore = patch_store,
         graph_store_factory: Callable[[], GraphVectorStore] | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        lifecycle_store: PageLifecycleStore | None = None,
     ):
         self._observations = observations
         self._patches = patches
         self._graph_store_factory = graph_store_factory
         self._embedder = embedder
+        if lifecycle_store is None:
+            from agent_rag.freshness import page_lifecycle_store
+
+            lifecycle_store = page_lifecycle_store
+        self._lifecycle_store = lifecycle_store
 
     def run(self, tool_input: PublishPatchInput) -> PublishPatchOutput:
         patch = self._patches.get(tool_input.patch_id)
@@ -189,6 +198,10 @@ class PublishPatchTool:
                 patch.status = "published"
                 patch.updated_at = _now()
                 self._patches.put(patch)
+                lifecycle = self._register_lifecycle(patch, observation)
+                graph_store.neo4j.update_webpage_lifecycle(
+                    patch.source_url, lifecycle.model_dump()
+                )
                 return PublishPatchOutput(
                     patch=patch,
                     read_after_write_ok=True,
@@ -243,6 +256,11 @@ class PublishPatchTool:
             if not read_ok:
                 patch.error = "Read-after-write verification failed"
             self._patches.put(patch)
+            if read_ok:
+                lifecycle = self._register_lifecycle(patch, observation)
+                graph_store.neo4j.update_webpage_lifecycle(
+                    patch.source_url, lifecycle.model_dump()
+                )
             return PublishPatchOutput(
                 patch=patch,
                 webpages_written=1,
@@ -263,3 +281,10 @@ class PublishPatchTool:
         finally:
             if graph_store is not None:
                 graph_store.close()
+
+    def _register_lifecycle(self, patch: GraphPatch, observation):
+        return self._lifecycle_store.register_indexed(
+            patch.source_url,
+            patch.content_hash,
+            quality_score=float(observation.metadata.get("quality_score", 0.0)),
+        )

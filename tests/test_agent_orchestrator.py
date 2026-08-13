@@ -265,6 +265,19 @@ class FakeQualityStore:
         return decision
 
 
+class FakeLifecycleStore:
+    def __init__(self):
+        self.validated = []
+
+    def mark_query_validated_unchanged(self, url):
+        self.validated.append(url)
+        return type(
+            "Target",
+            (),
+            {"last_validated_at": "2026-08-13T00:00:00+00:00"},
+        )()
+
+
 class FailingComposer:
     def compose(self, _query, _evidence, _history):
         raise ConnectionError("generation unavailable")
@@ -346,6 +359,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
                 quality_action, quality_usable, fail=quality_fail
             ),
             quality_store=FakeQualityStore(),
+            lifecycle_store=FakeLifecycleStore(),
         )
         return agent, search, expand, fetch, stage, publish, outbox
 
@@ -500,6 +514,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stage.calls, 0)
         self.assertEqual(publish.calls, 0)
         self.assertEqual(outbox.calls, 0)
+        self.assertEqual(agent.lifecycle_store.validated, ["https://www.polyu.edu.hk/study/"])
 
     async def test_irrelevant_evidence_without_exploration_abstains(self) -> None:
         irrelevant = EvidenceBlock(

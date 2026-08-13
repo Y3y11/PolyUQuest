@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agent_rag.api.routes import (
     agent_router,
+    freshness_router,
     graph_router,
     health_router,
     indexing_router,
@@ -29,6 +30,7 @@ async def _lifespan(app: FastAPI):
     app.state.embedding_ready = False
     app.state.bm25_ready = False
     app.state.index_worker = None
+    app.state.freshness_worker = None
     # Warm BM25 in a background thread so it doesn't block startup. The cold
     # build is several minutes on a full corpus; after the first warm run we
     # persist to disk, so subsequent restarts are near-instant. If a query
@@ -63,10 +65,43 @@ async def _lifespan(app: FastAPI):
             )
         except Exception as exc:
             logger.warning("patch_recovery_scan_failed", error=str(exc))
+    try:
+        from agent_rag.freshness import page_lifecycle_store
+        from agent_rag.storage.neo4j_store import Neo4jStore
+
+        graph = Neo4jStore()
+        try:
+            indexed_pages = await asyncio.to_thread(graph.list_indexed_webpages)
+            bootstrapped = await asyncio.to_thread(
+                page_lifecycle_store.bootstrap_indexed_pages,
+                indexed_pages,
+            )
+        finally:
+            graph.close()
+        if bootstrapped:
+            logger.info("freshness_targets_bootstrapped", count=bootstrapped)
+        from agent_rag.indexing.outbox import index_outbox
+
+        jobs = {
+            job.job_id: (job.status, job.last_error)
+            for job in index_outbox.list(limit=10000)
+        }
+        lifecycle_recovery = await asyncio.to_thread(
+            page_lifecycle_store.recover_stale_indexing, jobs
+        )
+        if any(lifecycle_recovery.values()):
+            logger.info("freshness_lifecycle_recovered", **lifecycle_recovery)
+    except Exception as exc:
+        logger.warning("freshness_bootstrap_failed", error=str(exc))
+    from agent_rag.freshness.worker import freshness_worker_lifespan
     from agent_rag.indexing.worker import index_worker_lifespan
 
-    async with index_worker_lifespan() as worker:
+    async with (
+        index_worker_lifespan() as worker,
+        freshness_worker_lifespan() as freshness_worker,
+    ):
         app.state.index_worker = worker
+        app.state.freshness_worker = freshness_worker
         app.state.startup_complete = True
         yield
 
@@ -96,6 +131,7 @@ app.include_router(agent_router.router, prefix="/api", tags=["agent"])
 app.include_router(graph_router.router, prefix="/api", tags=["graph"])
 app.include_router(health_router.router, prefix="/api", tags=["health"])
 app.include_router(indexing_router.router, prefix="/api", tags=["indexing"])
+app.include_router(freshness_router.router, prefix="/api", tags=["freshness"])
 
 
 def start():

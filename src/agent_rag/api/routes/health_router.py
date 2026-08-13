@@ -76,6 +76,16 @@ def readiness(request: Request):
             )
         )
     )
+    freshness_worker_ok = (
+        not settings.freshness_worker_enabled
+        or bool(
+            getattr(
+                getattr(request.app.state, "freshness_worker", None),
+                "is_running",
+                False,
+            )
+        )
+    )
     ready = all(
         (
             startup_complete,
@@ -84,6 +94,7 @@ def readiness(request: Request):
             neo4j_ok,
             qdrant_ok,
             index_worker_ok,
+            freshness_worker_ok,
         )
     )
     payload = HealthResponse(
@@ -94,6 +105,7 @@ def readiness(request: Request):
         bm25=bm25_ok,
         startup_complete=startup_complete,
         index_worker=index_worker_ok,
+        freshness_worker=freshness_worker_ok,
     )
     if ready:
         return payload

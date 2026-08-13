@@ -59,6 +59,9 @@ export interface AgentExplorationSummary {
   temporary_evidence_blocks: number;
   patches_published: number;
   indexing_jobs_queued: number;
+  pages_index_accepted: number;
+  pages_evidence_only: number;
+  pages_discarded: number;
   stop_reason: string;
 }
 
