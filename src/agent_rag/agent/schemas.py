@@ -66,6 +66,9 @@ class ExplorationSummary(BaseModel):
     temporary_evidence_blocks: int = 0
     patches_published: int = 0
     indexing_jobs_queued: int = 0
+    pages_index_accepted: int = 0
+    pages_evidence_only: int = 0
+    pages_discarded: int = 0
     stop_reason: str = ""
 
 

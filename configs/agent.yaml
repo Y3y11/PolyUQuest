@@ -15,3 +15,24 @@ evidence:
 fetch:
   timeout_seconds: 15
   max_bytes: 5000000
+
+quality:
+  policy_version: page-quality-v1
+  min_usable_chars: 40
+  min_index_chars: 400
+  min_index_blocks: 2
+  target_text_html_ratio: 0.12
+  min_index_text_html_ratio: 0.025
+  max_links_per_1k_chars: 20.0
+  max_duplicate_block_ratio: 0.45
+  target_query_coverage: 0.35
+  min_index_query_coverage: 0.08
+  index_score_threshold: 0.58
+  weights:
+    text_volume: 0.22
+    block_structure: 0.12
+    text_density: 0.12
+    link_density: 0.12
+    uniqueness: 0.12
+    query_relevance: 0.22
+    metadata: 0.08

@@ -92,6 +92,10 @@ class Neo4jStore:
             w.agent_run_id = p.agent_run_id,
             w.patch_id = p.patch_id,
             w.patch_status = p.patch_status,
+            w.quality_action = p.quality_action,
+            w.quality_score = p.quality_score,
+            w.quality_policy_version = p.quality_policy_version,
+            w.quality_decision_id = p.quality_decision_id,
             w.last_seen_build_id = $build_id
         """
         rows = [
@@ -110,6 +114,10 @@ class Neo4jStore:
                 "agent_run_id": p.get("agent_run_id", ""),
                 "patch_id": p.get("patch_id", ""),
                 "patch_status": p.get("patch_status", ""),
+                "quality_action": p.get("quality_action", ""),
+                "quality_score": p.get("quality_score", 0.0),
+                "quality_policy_version": p.get("quality_policy_version", ""),
+                "quality_decision_id": p.get("quality_decision_id", ""),
             }
             for p in pages
         ]

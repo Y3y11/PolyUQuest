@@ -70,6 +70,12 @@ Web 天然适合作为在线知识来源：它是组织信息对外/对内发布
 
 解决的问题：用户延迟不再被 Embedding 和双存储写入尾延迟绑架，同时保留可恢复、可审计的最终一致更新。
 
+### 迭代 5：通用页面质量门控
+
+在 Fetch 与 Stage 之间增加与站点和业务无关的质量决策层，将“本轮回答能否使用”与“是否值得长期入库”拆成两个维度。门控基于正文规模、结构块、HTML 文本密度、链接密度、重复块、查询覆盖率和来源元数据输出 `index / evidence_only / discard`，不增加 LLM 调用。
+
+解决的问题：在线探索不再把每个成功响应都无条件写入知识库；薄内容可临时支撑回答但不污染长期索引，空壳或无相关证据页面被丢弃。所有决策进入 SQLite 审计账本和前端探索轨迹，策略阈值可配置、可回放。
+
 ## 5. 当前总体架构
 
 ```text
@@ -79,6 +85,8 @@ Next.js UI
       -> PolyUQuest Search Tool
           -> Qdrant Dense + BM25 + Neo4j Graph + Reranker
       -> Expand / Trusted Fetch / Snapshot
+      -> Generic Page Quality Gate
+          -> index / evidence_only / discard
       -> Answer Composer + citations
       -> Observation Ledger
       -> GraphPatch -> SQLite Outbox
@@ -113,7 +121,6 @@ Index Worker
 
 ## 8. 后续路线
 
-- 页面质量门控：index / evidence_only / discard；
 - 页面 TTL、变化频率与价值驱动的 Freshness Scheduler；
 - DOM Diff 与变化 Block 的局部 Embedding；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
@@ -127,6 +134,7 @@ Index Worker
 - `docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md`：增量入图；
 - `docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`：可靠性优化；
 - `docs/ASYNC_INCREMENTAL_INDEXING_PRD.md`：异步入图；
+- `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
 
 简历写法和面试准备将在架构能力稳定、关键指标补齐后写入本文后续章节，避免把尚未验证的工程指标提前包装为成果。

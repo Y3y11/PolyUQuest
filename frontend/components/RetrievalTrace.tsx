@@ -46,6 +46,7 @@ const STEP_THEME: Record<string, StepTheme> = {
   polyuquest_search:  { icon: Search,               ring: "bg-blue-500/15 border-blue-500/35",     iconColor: "text-blue-500"    },
   polyuquest_expand:  { icon: GitBranch,            ring: "bg-emerald-500/15 border-emerald-500/35", iconColor: "text-emerald-500" },
   web_fetch_trusted_page: { icon: FileText,         ring: "bg-amber-500/15 border-amber-500/35",   iconColor: "text-amber-500"   },
+  polyuquest_evaluate_page_quality: { icon: Filter, ring: "bg-teal-500/15 border-teal-500/35", iconColor: "text-teal-500" },
   answer_compose:     { icon: Cpu,                  ring: "bg-violet-500/15 border-violet-500/35", iconColor: "text-violet-500"  },
   evidence_assessment:{ icon: BarChart3,            ring: "bg-rose-500/15 border-rose-500/35",     iconColor: "text-rose-500"    },
 };
@@ -164,6 +165,10 @@ function summariseStep(step: PipelineStep): string {
       return `${d.candidates ?? 0} trusted candidates`;
     case "web_fetch_trusted_page":
       return `${d.relevant_blocks ?? 0} relevant blocks · ${String(d.status ?? "done")}`;
+    case "polyuquest_evaluate_page_quality": {
+      const score = typeof d.score === "number" ? `${Math.round(d.score * 100)}%` : null;
+      return [String(d.decision_action ?? d.fallback_action ?? "evaluating"), score].filter(Boolean).join(" · ");
+    }
     case "evidence_assessment": {
       const confidence = typeof d.confidence === "number"
         ? `${Math.round(d.confidence * 100)}% confidence`

@@ -6,6 +6,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from agent_rag.agent.schemas import (
 )
 from agent_rag.config import agent_config, llm_config, settings, stage_model
 from agent_rag.indexing.outbox import IndexOutbox, index_outbox
+from agent_rag.quality import PageQualityGate, PageQualityStore, page_quality_store
 from agent_rag.tools._ranking import expanded_query, frontier_score, lexical_score
 from agent_rag.tools.observations import ObservationStore, observation_store
 from agent_rag.tools.schemas import (
@@ -117,6 +119,8 @@ class QueryDrivenAgent:
         observations: ObservationStore = observation_store,
         snapshot_tool: PageSnapshotTool | None = None,
         indexing_outbox: IndexOutbox = index_outbox,
+        quality_gate: PageQualityGate | None = None,
+        quality_store: PageQualityStore = page_quality_store,
     ):
         if search_tool is None:
             from agent_rag.tools.search import SearchTool
@@ -153,6 +157,8 @@ class QueryDrivenAgent:
             snapshot_tool = PageSnapshotTool()
         self.snapshot_tool = snapshot_tool
         self.indexing_outbox = indexing_outbox
+        self.quality_gate = quality_gate or PageQualityGate()
+        self.quality_store = quality_store
 
     async def run(
         self, request: AgentQueryRequest, emit: EmitCallback | None = None
@@ -483,6 +489,64 @@ class QueryDrivenAgent:
                 continue
 
             record_data = self.observations.get(fetched.observation_id)
+            quality_decision = None
+            if record_data is not None and not fetched.not_modified:
+                quality_started = time.perf_counter()
+                await record(
+                    "polyuquest.evaluate_page_quality",
+                    "started",
+                    observation_id=fetched.observation_id,
+                )
+                quality_error = None
+                try:
+                    quality_decision = self.quality_gate.evaluate(record_data, fetched)
+                    quality_decision = await asyncio.to_thread(
+                        self.quality_store.put, quality_decision
+                    )
+                    record_data.metadata.update(
+                        {
+                            "quality_action": quality_decision.action,
+                            "quality_score": quality_decision.score,
+                            "quality_policy_version": quality_decision.policy_version,
+                            "quality_decision_id": quality_decision.decision_id,
+                        }
+                    )
+                    await asyncio.to_thread(self.observations.put, record_data)
+                except Exception as exc:
+                    quality_error = exc
+                    quality_decision = self.quality_gate.fallback(record_data, exc)
+                    with suppress(Exception):
+                        quality_decision = await asyncio.to_thread(
+                            self.quality_store.put, quality_decision
+                        )
+                if quality_decision.action == "index":
+                    summary.pages_index_accepted += 1
+                elif quality_decision.action == "evidence_only":
+                    summary.pages_evidence_only += 1
+                else:
+                    summary.pages_discarded += 1
+                if quality_error is not None:
+                    await record(
+                        "polyuquest.evaluate_page_quality",
+                        "failed",
+                        int((time.perf_counter() - quality_started) * 1000),
+                        error=str(quality_error),
+                        fallback_action="evidence_only",
+                        evidence_usable=True,
+                    )
+                else:
+                    await record(
+                        "polyuquest.evaluate_page_quality",
+                        "succeeded",
+                        int((time.perf_counter() - quality_started) * 1000),
+                        decision_id=quality_decision.decision_id,
+                        decision_action=quality_decision.action,
+                        evidence_usable=quality_decision.evidence_usable,
+                        score=quality_decision.score,
+                        policy_version=quality_decision.policy_version,
+                        reasons=quality_decision.reasons,
+                        features=quality_decision.features.model_dump(),
+                    )
             fetched_evidence: list[EvidenceBlock] = []
             if fetched.not_modified and snapshot is not None:
                 scored_snapshot = sorted(
@@ -518,7 +582,11 @@ class QueryDrivenAgent:
                             temporary=False,
                         )
                     )
-            elif record_data and fetched.evidence_gain.relevant_blocks > 0:
+            elif (
+                record_data
+                and fetched.evidence_gain.relevant_blocks > 0
+                and (quality_decision is None or quality_decision.evidence_usable)
+            ):
                 selected_ids = set(fetched.block_refs)
                 for block in record_data.blocks:
                     if block.get("block_id") not in selected_ids:
@@ -551,7 +619,12 @@ class QueryDrivenAgent:
                 frontier.append(item)
             await emit("evidence", {"blocks": [item.model_dump() for item in evidence]})
 
-            if request.persist_discoveries and record_data is not None:
+            if (
+                request.persist_discoveries
+                and record_data is not None
+                and quality_decision is not None
+                and quality_decision.action == "index"
+            ):
                 publish_started = time.perf_counter()
                 action_name = (
                     "polyuquest.queue_index_patch"

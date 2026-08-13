@@ -125,6 +125,9 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `POST` | `/api/agent/query` | Bounded search/expand/fetch Agent with evidence trace |
 | `POST` | `/api/agent/query/stream` | Agent actions and final response over SSE |
 | `GET`  | `/api/graph/stats` | Knowledge-graph node counts |
+| `GET`  | `/api/indexing/jobs` | Async indexing jobs and status |
+| `GET`  | `/api/indexing/quality/decisions` | Audited page-quality decisions |
+| `GET`  | `/api/indexing/quality/stats` | Index/evidence-only/discard counts |
 | `GET`  | `/api/health/live` | Process liveness without dependency access |
 | `GET`  | `/api/health/ready` | Startup and core dependency readiness |
 | `GET`  | `/api/health/dependencies` | Neo4j and Qdrant status |
@@ -144,13 +147,17 @@ for local development. See
 and [`docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`](docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md)
 for the write and recovery contracts.
 
-By default, durable indexing is asynchronous: the request stores its Observation,
-stages a Patch, and enqueues a SQLite Outbox job; an in-process Index Worker
-publishes the Patch to Neo4j/Qdrant with lease-based retries. Operational APIs:
+By default, durable indexing is asynchronous. A generic page-quality gate first
+separates current-answer evidence from long-term index value. Only `index`
+decisions stage a Patch and enqueue a SQLite Outbox job; `evidence_only` pages
+remain temporary and `discard` pages support neither answer nor index. The
+in-process Index Worker publishes accepted Patches to Neo4j/Qdrant with
+lease-based retries. Operational APIs:
 
 - `GET /api/indexing/jobs` and `/api/indexing/jobs/{job_id}`;
 - `GET /api/indexing/stats`;
 - `POST /api/indexing/jobs/{job_id}/retry`.
+- `GET /api/indexing/quality/decisions` and `/api/indexing/quality/stats`.
 
 Set `AGENT_ASYNC_INDEXING=false` to fall back to synchronous publishing, or
 `INDEX_WORKER_ENABLED=false` when running a separately managed worker.

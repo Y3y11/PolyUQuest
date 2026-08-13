@@ -7,6 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 
 from agent_rag.indexing.outbox import IndexJob, IndexJobStatus, index_outbox
+from agent_rag.quality import PageQualityDecision, page_quality_store
+from agent_rag.quality.gate import QualityAction
 
 router = APIRouter()
 
@@ -40,3 +42,26 @@ def retry_index_job(job_id: str) -> IndexJob:
         return index_outbox.retry(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/indexing/quality/decisions", response_model=list[PageQualityDecision])
+def list_quality_decisions(
+    action: QualityAction | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[PageQualityDecision]:
+    return page_quality_store.list(action=action, limit=limit)
+
+
+@router.get(
+    "/indexing/quality/decisions/{decision_id}", response_model=PageQualityDecision
+)
+def get_quality_decision(decision_id: str) -> PageQualityDecision:
+    decision = page_quality_store.get(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Page quality decision not found")
+    return decision
+
+
+@router.get("/indexing/quality/stats")
+def get_quality_stats() -> dict[str, int | float]:
+    return page_quality_store.stats()

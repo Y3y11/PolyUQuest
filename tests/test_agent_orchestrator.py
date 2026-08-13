@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from agent_rag.agent.orchestrator import QueryDrivenAgent
 from agent_rag.agent.schemas import AgentBudget, AgentQueryRequest
+from agent_rag.quality import PageQualityDecision, PageQualityFeatures
 from agent_rag.tools.observations import ObservationRecord, ObservationStore
 from agent_rag.tools.schemas import (
     EvidenceBlock,
@@ -214,6 +215,56 @@ class FakeComposer:
         return f"answer from {len(evidence)} evidence blocks"
 
 
+class FakeQualityGate:
+    def __init__(self, action="index", evidence_usable=True, fail=False):
+        self.action = action
+        self.evidence_usable = evidence_usable
+        self.fail = fail
+
+    def evaluate(self, observation, _fetched):
+        if self.fail:
+            raise RuntimeError("quality unavailable")
+        return PageQualityDecision(
+            observation_id=observation.observation_id,
+            run_id=observation.run_id,
+            source_url=observation.metadata["url"],
+            content_hash=observation.metadata["content_hash"],
+            action=self.action,
+            evidence_usable=self.evidence_usable,
+            score=0.9 if self.action == "index" else 0.4,
+            policy_version="test-v1",
+            reasons=["test_decision"],
+            features=PageQualityFeatures(
+                block_count=1,
+                relevant_block_count=1,
+                total_text_chars=100,
+            ),
+        )
+
+    def fallback(self, observation, error):
+        return PageQualityDecision(
+            observation_id=observation.observation_id,
+            run_id=observation.run_id,
+            source_url=observation.metadata["url"],
+            content_hash=observation.metadata["content_hash"],
+            action="evidence_only",
+            evidence_usable=True,
+            score=0,
+            policy_version="test-v1",
+            reasons=[f"quality_gate_error:{type(error).__name__}"],
+            features=PageQualityFeatures(),
+        )
+
+
+class FakeQualityStore:
+    def __init__(self):
+        self.decisions = []
+
+    def put(self, decision):
+        self.decisions.append(decision)
+        return decision
+
+
 class FailingComposer:
     def compose(self, _query, _evidence, _history):
         raise ConnectionError("generation unavailable")
@@ -263,7 +314,15 @@ def _existing_evidence() -> EvidenceBlock:
 
 class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
     def build_agent(
-        self, *, evidence=None, fetch_fail=False, not_modified=False, snapshot=False
+        self,
+        *,
+        evidence=None,
+        fetch_fail=False,
+        not_modified=False,
+        snapshot=False,
+        quality_action="index",
+        quality_usable=True,
+        quality_fail=False,
     ):
         store = ObservationStore()
         search = FakeSearch(evidence or [])
@@ -283,6 +342,10 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             observations=store,
             snapshot_tool=FakeSnapshot(exists=snapshot),
             indexing_outbox=outbox,
+            quality_gate=FakeQualityGate(
+                quality_action, quality_usable, fail=quality_fail
+            ),
+            quality_store=FakeQualityStore(),
         )
         return agent, search, expand, fetch, stage, publish, outbox
 
@@ -360,6 +423,50 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(publish.calls, 0)
         self.assertEqual(outbox.calls, 1)
         self.assertTrue(all(item.temporary for item in result.evidence))
+
+    async def test_evidence_only_page_answers_without_index_job(self) -> None:
+        agent, _, _, _, stage, publish, outbox = self.build_agent(
+            quality_action="evidence_only"
+        )
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        self.assertEqual(result.response_status, "answered")
+        self.assertEqual(result.exploration.pages_evidence_only, 1)
+        self.assertEqual(result.exploration.indexing_jobs_queued, 0)
+        self.assertEqual(stage.calls, 0)
+        self.assertEqual(publish.calls, 0)
+        self.assertEqual(outbox.calls, 0)
+        self.assertTrue(result.evidence)
+
+    async def test_discarded_page_is_not_evidence_or_indexed(self) -> None:
+        agent, _, _, _, stage, _, outbox = self.build_agent(
+            quality_action="discard", quality_usable=False
+        )
+        result = await agent.run(
+            AgentQueryRequest(
+                query="admission deadline",
+                budget=AgentBudget(max_iterations=1, max_pages=1, max_depth=1),
+            )
+        )
+        self.assertEqual(result.response_status, "abstained")
+        self.assertEqual(result.exploration.pages_discarded, 1)
+        self.assertFalse(result.evidence)
+        self.assertEqual(stage.calls, 0)
+        self.assertEqual(outbox.calls, 0)
+
+    async def test_quality_failure_fails_safe_to_evidence_only(self) -> None:
+        agent, _, _, _, stage, _, outbox = self.build_agent(quality_fail=True)
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        self.assertEqual(result.response_status, "answered")
+        self.assertEqual(result.exploration.pages_evidence_only, 1)
+        self.assertEqual(stage.calls, 0)
+        self.assertEqual(outbox.calls, 0)
+        failed = next(
+            action
+            for action in result.actions
+            if action.action == "polyuquest.evaluate_page_quality"
+            and action.status == "failed"
+        )
+        self.assertEqual(failed.details["fallback_action"], "evidence_only")
 
     async def test_fetch_failure_is_bounded_and_abstains(self) -> None:
         agent, _, _, fetch, _, _, _ = self.build_agent(fetch_fail=True)

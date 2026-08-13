@@ -11,10 +11,14 @@ from fastapi import HTTPException
 from agent_rag.api.routes.indexing_router import (
     get_index_job,
     get_indexing_stats,
+    get_quality_decision,
+    get_quality_stats,
     list_index_jobs,
+    list_quality_decisions,
     retry_index_job,
 )
 from agent_rag.indexing.outbox import IndexOutbox
+from agent_rag.quality import PageQualityDecision, PageQualityFeatures, PageQualityStore
 from agent_rag.tools.schemas import GraphPatch
 
 
@@ -22,6 +26,9 @@ class IndexingRouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.outbox = IndexOutbox(Path(self.temp_dir.name) / "ledger.sqlite3")
+        self.quality_store = PageQualityStore(
+            Path(self.temp_dir.name) / "quality-ledger.sqlite3"
+        )
         now = datetime.now(UTC).isoformat()
         patch_model = GraphPatch(
             patch_id="patch-api",
@@ -37,9 +44,15 @@ class IndexingRouterTests(unittest.TestCase):
             "agent_rag.api.routes.indexing_router.index_outbox", self.outbox
         )
         self.patcher.start()
+        self.quality_patcher = patch(
+            "agent_rag.api.routes.indexing_router.page_quality_store",
+            self.quality_store,
+        )
+        self.quality_patcher.start()
 
     def tearDown(self) -> None:
         self.patcher.stop()
+        self.quality_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_list_detail_and_stats(self) -> None:
@@ -58,6 +71,29 @@ class IndexingRouterTests(unittest.TestCase):
         retried = retry_index_job(self.job.job_id)
         self.assertEqual(retried.status, "pending")
         self.assertEqual(retried.manual_retries, 1)
+
+    def test_quality_decision_list_detail_and_stats(self) -> None:
+        decision = PageQualityDecision(
+            observation_id="obs-quality-api",
+            run_id="run-api",
+            source_url="https://example.org/guide",
+            content_hash="quality-hash",
+            action="index",
+            evidence_usable=True,
+            score=0.86,
+            policy_version="test-v1",
+            reasons=["quality_threshold_passed"],
+            features=PageQualityFeatures(block_count=3, relevant_block_count=2),
+        )
+        self.quality_store.put(decision)
+        self.assertEqual(list_quality_decisions(limit=10)[0].decision_id, decision.decision_id)
+        self.assertEqual(get_quality_decision(decision.decision_id).action, "index")
+        self.assertEqual(get_quality_stats()["index"], 1)
+
+    def test_missing_quality_decision_returns_404(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            get_quality_decision("missing")
+        self.assertEqual(raised.exception.status_code, 404)
 
 
 if __name__ == "__main__":
