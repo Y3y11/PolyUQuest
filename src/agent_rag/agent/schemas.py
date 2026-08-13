@@ -65,6 +65,7 @@ class ExplorationSummary(BaseModel):
     frontier_candidates_seen: int = 0
     temporary_evidence_blocks: int = 0
     patches_published: int = 0
+    indexing_jobs_queued: int = 0
     stop_reason: str = ""
 
 

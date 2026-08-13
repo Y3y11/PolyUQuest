@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from agent_rag.api.schemas import HealthResponse
+from agent_rag.config import settings
 
 router = APIRouter()
 
@@ -65,8 +66,25 @@ def readiness(request: Request):
     startup_complete = bool(getattr(request.app.state, "startup_complete", False))
     embedding_ok = bool(getattr(request.app.state, "embedding_ready", False))
     bm25_ok = bool(getattr(request.app.state, "bm25_ready", False))
+    index_worker_ok = (
+        not settings.index_worker_enabled
+        or bool(
+            getattr(
+                getattr(request.app.state, "index_worker", None),
+                "is_running",
+                False,
+            )
+        )
+    )
     ready = all(
-        (startup_complete, embedding_ok, bm25_ok, neo4j_ok, qdrant_ok)
+        (
+            startup_complete,
+            embedding_ok,
+            bm25_ok,
+            neo4j_ok,
+            qdrant_ok,
+            index_worker_ok,
+        )
     )
     payload = HealthResponse(
         status="ok" if ready else "not_ready",
@@ -75,6 +93,7 @@ def readiness(request: Request):
         embedding=embedding_ok,
         bm25=bm25_ok,
         startup_complete=startup_complete,
+        index_worker=index_worker_ok,
     )
     if ready:
         return payload

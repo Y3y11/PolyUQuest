@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     agent_repair_on_startup: bool = True
     agent_repair_max_patches: int = 25
     agent_patch_max_attempts: int = 5
+    agent_async_indexing: bool = True
+    index_worker_enabled: bool = True
+    index_worker_poll_seconds: float = 0.5
+    index_worker_lease_seconds: int = 120
+    index_job_max_attempts: int = 5
+    index_job_retry_base_seconds: float = 2.0
+    index_job_retry_max_seconds: float = 300.0
+    index_job_retention_days: int = 30
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -107,7 +115,7 @@ class Settings(BaseSettings):
         return [h.strip() for h in raw.split(",") if h.strip()]
 
     @model_validator(mode="after")
-    def _validate_cors(self) -> "Settings":
+    def _validate_cors(self) -> Settings:
         """启动期校验 CORS 配置，防止误配重新出现。
 
         规则：
@@ -118,6 +126,15 @@ class Settings(BaseSettings):
         """
         origins = self.cors_origins_list
         regex = self.cors_allow_origin_regex.strip()
+
+        if self.index_worker_enabled and not self.agent_async_indexing:
+            raise ValueError(
+                "INDEX_WORKER_ENABLED=true requires AGENT_ASYNC_INDEXING=true"
+            )
+        if self.index_worker_lease_seconds <= 0:
+            raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
+        if self.index_job_max_attempts <= 0:
+            raise ValueError("INDEX_JOB_MAX_ATTEMPTS must be positive")
 
         if self.cors_allow_credentials:
             if "*" in origins:

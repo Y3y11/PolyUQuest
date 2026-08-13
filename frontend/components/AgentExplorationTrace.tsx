@@ -23,6 +23,7 @@ const ACTION_LABELS: Record<string, string> = {
   "frontier.select": "选择下一探索页面",
   "web.fetch_trusted_page": "访问可信机构页面",
   "polyuquest.publish_patch": "发布增量知识补丁",
+  "polyuquest.queue_index_patch": "提交异步知识更新",
   "answer.compose": "基于证据生成回答",
 };
 
@@ -56,6 +57,7 @@ function actionIcon(action: string) {
   if (action === "frontier.select") return BrainCircuit;
   if (action === "web.fetch_trusted_page") return Globe2;
   if (action === "polyuquest.publish_patch") return ShieldCheck;
+  if (action === "polyuquest.queue_index_patch") return ShieldCheck;
   return FileSearch;
 }
 
@@ -145,6 +147,14 @@ function actionSummary(action: AgentAction): string {
         : ` · 写入 ${details.blocks_written ?? 0} 块/${details.links_written ?? 0} 链接`;
       const deleted = Number(details.blocks_deleted || 0) + Number(details.links_deleted || 0);
       return `${labels[operation] || "增量知识已发布"}${counts}${deleted > 0 ? ` · 清理 ${deleted} 个旧项` : ""}`;
+    }
+  }
+  if (action.action === "polyuquest.queue_index_patch") {
+    if (action.status === "started") return "正在提交异步知识更新任务";
+    if (action.status === "succeeded") {
+      return details.deduplicated === true
+        ? `相同页面快照已在队列中 · ${details.job_id ?? ""}`
+        : `知识更新已排队 · ${details.job_id ?? ""} · 本次回答无需等待入图`;
     }
   }
   if (action.action === "answer.compose") {

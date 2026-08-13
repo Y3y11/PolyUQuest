@@ -144,6 +144,9 @@ class FakeStage:
             updated_at=now,
         )
 
+    def discard_duplicate(self, _patch_id):
+        return True
+
 
 class FakePublish:
     def __init__(self):
@@ -163,6 +166,47 @@ class FakePublish:
             updated_at=now,
         )
         return PublishPatchOutput(patch=patch, read_after_write_ok=True)
+
+
+class FakeOutbox:
+    def __init__(self, existing_job=None):
+        self.calls = 0
+        self.existing_job = existing_job
+
+    def enqueue(self, patch):
+        self.calls += 1
+        return (
+            type(
+                "Job",
+                (),
+                {
+                    "job_id": "job-1",
+                    "status": "pending",
+                },
+            )(),
+            True,
+        )
+
+    def get_by_snapshot(self, _source_url, _content_hash):
+        return self.existing_job
+
+
+class RacingOutbox(FakeOutbox):
+    def enqueue(self, _patch):
+        self.calls += 1
+        return (
+            type(
+                "Job",
+                (),
+                {
+                    "job_id": "job-winner",
+                    "patch_id": "patch-winner",
+                    "status": "pending",
+                    "content_hash": "hash",
+                },
+            )(),
+            False,
+        )
 
 
 class FakeComposer:
@@ -227,6 +271,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         fetch = FakeFetch(store, fail=fetch_fail, not_modified=not_modified)
         stage = FakeStage()
         publish = FakePublish()
+        outbox = FakeOutbox()
         agent = QueryDrivenAgent(
             search_tool=search,
             expand_tool=expand,
@@ -237,11 +282,12 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             composer=FakeComposer(),
             observations=store,
             snapshot_tool=FakeSnapshot(exists=snapshot),
+            indexing_outbox=outbox,
         )
-        return agent, search, expand, fetch, stage, publish
+        return agent, search, expand, fetch, stage, publish, outbox
 
     async def test_sufficient_existing_evidence_does_not_fetch(self) -> None:
-        agent, _, expand, fetch, stage, _ = self.build_agent(
+        agent, _, expand, fetch, stage, _, _ = self.build_agent(
             evidence=[_existing_evidence()]
         )
         result = await agent.run(
@@ -253,7 +299,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stage.calls, 0)
 
     async def test_miss_expands_and_uses_temporary_evidence(self) -> None:
-        agent, _, expand, fetch, stage, _ = self.build_agent()
+        agent, _, expand, fetch, stage, _, _ = self.build_agent()
         result = await agent.run(
             AgentQueryRequest(query="admission deadline", persist_discoveries=False)
         )
@@ -264,7 +310,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stage.calls, 0)
 
     async def test_search_outage_falls_back_to_bounded_trusted_web(self) -> None:
-        agent, _, expand, fetch, _, _ = self.build_agent()
+        agent, _, expand, fetch, _, _, _ = self.build_agent()
         agent.search_tool = FailingSearch()
         result = await agent.run(
             AgentQueryRequest(query="admission deadline", persist_discoveries=False)
@@ -280,7 +326,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed_search.details["fallback_to_trusted_web"])
 
     async def test_stream_emits_auditable_agent_decisions(self) -> None:
-        agent, _, _, _, _, _ = self.build_agent()
+        agent, _, _, _, _, _, _ = self.build_agent()
         events: list[tuple[str, dict]] = []
 
         async def emit(event: str, data: dict) -> None:
@@ -306,15 +352,17 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("candidate_score", started_fetch["details"])
 
     async def test_default_exploration_publishes_patch(self) -> None:
-        agent, _, _, _, stage, publish = self.build_agent()
+        agent, _, _, _, stage, publish, outbox = self.build_agent()
         result = await agent.run(AgentQueryRequest(query="admission deadline"))
-        self.assertEqual(result.exploration.patches_published, 1)
+        self.assertEqual(result.exploration.patches_published, 0)
+        self.assertEqual(result.exploration.indexing_jobs_queued, 1)
         self.assertEqual(stage.calls, 1)
-        self.assertEqual(publish.calls, 1)
-        self.assertTrue(all(not item.temporary for item in result.evidence))
+        self.assertEqual(publish.calls, 0)
+        self.assertEqual(outbox.calls, 1)
+        self.assertTrue(all(item.temporary for item in result.evidence))
 
     async def test_fetch_failure_is_bounded_and_abstains(self) -> None:
-        agent, _, _, fetch, _, _ = self.build_agent(fetch_fail=True)
+        agent, _, _, fetch, _, _, _ = self.build_agent(fetch_fail=True)
         result = await agent.run(
             AgentQueryRequest(
                 query="unknown question",
@@ -330,7 +378,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_not_modified_reuses_snapshot_without_publishing(self) -> None:
-        agent, _, _, fetch, stage, publish = self.build_agent(
+        agent, _, _, fetch, stage, publish, outbox = self.build_agent(
             not_modified=True, snapshot=True
         )
         result = await agent.run(AgentQueryRequest(query="admission deadline"))
@@ -344,6 +392,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not item.temporary for item in result.evidence))
         self.assertEqual(stage.calls, 0)
         self.assertEqual(publish.calls, 0)
+        self.assertEqual(outbox.calls, 0)
 
     async def test_irrelevant_evidence_without_exploration_abstains(self) -> None:
         irrelevant = EvidenceBlock(
@@ -352,7 +401,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             source_url="https://www.polyu.edu.hk/campus/",
             scores=EvidenceScores(retrieval=0.01),
         )
-        agent, _, _, fetch, _, _ = self.build_agent(evidence=[irrelevant])
+        agent, _, _, fetch, _, _, _ = self.build_agent(evidence=[irrelevant])
         result = await agent.run(
             AgentQueryRequest(query="research scholarship", explore_web=False)
         )
@@ -360,13 +409,50 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetch.calls, 0)
 
     async def test_generation_failure_returns_partial_not_answered(self) -> None:
-        agent, _, _, _, _, _ = self.build_agent(evidence=[_existing_evidence()])
+        agent, _, _, _, _, _, _ = self.build_agent(evidence=[_existing_evidence()])
         agent.composer = FailingComposer()
         result = await agent.run(
             AgentQueryRequest(query="admission deadline", persist_discoveries=False)
         )
         self.assertEqual(result.response_status, "partial")
         self.assertIn("答案生成服务当前不可用", result.answer)
+
+    async def test_duplicate_snapshot_does_not_stage_an_orphan_patch(self) -> None:
+        agent, _, _, _, stage, publish, _ = self.build_agent()
+        agent.indexing_outbox = FakeOutbox(
+            existing_job=type(
+                "Job",
+                (),
+                {
+                    "job_id": "job-existing",
+                    "patch_id": "patch-existing",
+                    "status": "running",
+                    "content_hash": "hash",
+                },
+            )()
+        )
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        self.assertEqual(stage.calls, 0)
+        self.assertEqual(publish.calls, 0)
+        self.assertEqual(result.exploration.indexing_jobs_queued, 0)
+        queued = next(
+            item
+            for item in result.actions
+            if item.action == "polyuquest.queue_index_patch"
+            and item.status == "succeeded"
+        )
+        self.assertTrue(queued.details["deduplicated"])
+
+    async def test_enqueue_race_discards_losing_staged_patch(self) -> None:
+        agent, _, _, _, stage, publish, _ = self.build_agent()
+        discarded: list[str] = []
+        stage.discard_duplicate = discarded.append
+        agent.indexing_outbox = RacingOutbox()
+        result = await agent.run(AgentQueryRequest(query="admission deadline"))
+        self.assertEqual(stage.calls, 1)
+        self.assertEqual(publish.calls, 0)
+        self.assertEqual(discarded, ["patch-1"])
+        self.assertEqual(result.exploration.indexing_jobs_queued, 0)
 
 
 if __name__ == "__main__":

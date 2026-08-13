@@ -1,0 +1,132 @@
+# PolyUQuest 到实时 Web 知识 Agent：项目工程化演进总览
+
+> 本文是持续更新的项目主叙事。每轮详细需求与验收以对应 PRD 为准。
+
+## 1. 项目业务背景
+
+企业内网、大学/研究机构官网、政府门户和产品文档站有一组共同特征：信息源相对可信，但网页数量大、层级深、跨页关联多，而且招生、政策、人员、公告和产品版本持续变化。传统做法要么依赖站内关键词搜索，要么周期性全量抓取并重建 RAG 索引。
+
+全量离线建库适合构建稳定基线，却难以覆盖刚发布页面和长尾查询；完全依赖在线搜索又会重复抓取，不能积累组织知识，也缺乏引用与检索轨迹。因此系统采用“离线结构化底座 + 查询驱动在线探索 + 增量知识更新”的混合模式：
+
+```text
+可信机构 Web
+  -> 离线/历史结构化知识底座
+  -> Query-driven Agent 在线探索缺口
+  -> Observation 立即支撑本次回答
+  -> 异步增量入图供未来查询复用
+```
+
+## 2. 原始 PolyUQuest 算法底座
+
+PolyUQuest 首先是一个结构感知图增强 RAG 算法框架，而不是一个“需要修复固定 Pipeline”的旧系统。它针对 HTML 扁平分块丢失页面层级、跨页关系和证据溯源的问题，构建：
+
+- WebPage：页面及超链接导航关系；
+- DOM Block：标题路径、父子层级和原文证据；
+- Entity：跨页实体与语义关系；
+- Dense、BM25、图遍历和 Reranker 融合检索；
+- 直接检索、页面导航、实体推理及混合模式路由；
+- 来源 URL、DOM 标题路径和实体链接的细粒度引用。
+
+该阶段验证的是“网页结构和图关系是否改善复杂机构网站问答”。工程化阶段保留这一算法能力，将其封装为 Agent 可调用的 Search/Expand/Snapshot/Publish 工具。
+
+## 3. 为什么从 Web 场景构建 Agent
+
+Web 天然适合作为在线知识来源：它是组织信息对外/对内发布的最终载体，有明确 URL、链接结构、更新时间和 HTTP 缓存协议。基于 Web 的 Agent 不需要先假设所有页面都已离线完成建图，而是可以在已有知识不足时沿可信入口探索。
+
+但在线探索引出新的工程问题：
+
+1. 如何判断已有证据是否足够，避免无界浏览？
+2. 如何约束探索域名、轮次、深度、页面数和耗时？
+3. 新抓取内容只服务本次回答，还是应该进入长期知识库？
+4. Neo4j 与 Qdrant 无法共享事务，部分写入如何恢复？
+5. 相同页面未变化时如何避免重复抓取和向量化？
+6. 入图是否应该阻塞用户回答？
+
+后续迭代围绕这些问题逐步演进，而不是一次性堆叠复杂中间件。
+
+## 4. 系统演进
+
+### 迭代 1：查询驱动的自主检索问答 MVP
+
+将原算法模块封装成 Search、Expand、Fetch 等工具，引入 Evidence Evaluator 和预算控制 Agent Loop。知识库命中不足时，Agent 沿图关系和可信站点入口继续探索，并向前端输出可审计的动作摘要，而非暴露模型隐藏思维链。
+
+解决的问题：从 `question -> answer` 的算法调用，扩展为能识别知识缺口、在线找证据、受预算约束并可观测的业务程序。
+
+### 迭代 2：探索内容增量入图
+
+将 Fetch 产生的临时 Observation 通过 Stage/Publish Patch 写入 Neo4j/Qdrant，区分 create、update、unchanged、repair；通过 content hash、URL 锁、快照对账和读后校验实现幂等与最终一致。
+
+解决的问题：在线探索不再是一次性成本，新知识能服务后续查询。
+
+### 迭代 3：可靠性与可运维性
+
+使用 SQLite 持久化 Observation/Patch Ledger；启动时恢复中断 Patch；使用 ETag/Last-Modified 和 HTTP 304 复用已入库快照；拆分 liveness/readiness/dependencies；图统计区分 fetched page 与 link stub。
+
+解决的问题：服务重启不丢恢复线索、未变化页面不重复计算、运行状态能够被部署系统正确判断。
+
+### 迭代 4：异步增量入图
+
+在 Stage 与 Publish 之间加入 SQLite Outbox。Agent 只提交任务即可继续生成回答；Index Worker 通过 lease 消费，失败指数退避，达到阈值进入 dead letter，并提供任务查询和人工重试接口。
+
+解决的问题：用户延迟不再被 Embedding 和双存储写入尾延迟绑架，同时保留可恢复、可审计的最终一致更新。
+
+## 5. 当前总体架构
+
+```text
+Next.js UI
+  -> FastAPI Agent API / SSE
+      -> Query Profile + Evidence Evaluator + Budget Controller
+      -> PolyUQuest Search Tool
+          -> Qdrant Dense + BM25 + Neo4j Graph + Reranker
+      -> Expand / Trusted Fetch / Snapshot
+      -> Answer Composer + citations
+      -> Observation Ledger
+      -> GraphPatch -> SQLite Outbox
+
+Index Worker
+  -> lease / retry / dead letter
+  -> PublishPatchTool
+  -> Neo4j WebPage-Block-Entity graph
+  -> Qdrant vectors
+  -> read-after-write verification
+```
+
+## 6. 技术选型理由
+
+- FastAPI：工具边界清晰、Pydantic 契约和 SSE 适合 Agent 服务。
+- Neo4j：表达网页链接、DOM 归属、实体跨页关系与图遍历。
+- Qdrant：承载 Page/Block/Entity 向量检索并支持 payload 过滤。
+- BGE-M3 + BM25：兼顾语义匹配与机构名称、课程编号、政策术语等精确匹配。
+- Reranker：在多路召回后统一相关性排序。
+- SQLite WAL：当前单机 MVP 无需新增基础设施，适合作为 Observation/Patch/Outbox 持久日志；吞吐提升后再迁移 PostgreSQL/Redis Streams。
+- Next.js/TypeScript：展示回答、引用、Agent 动作和知识图谱。
+- HTTP Conditional Request：复用 Web 原生 ETag/Last-Modified，而不是自造刷新协议。
+
+## 7. 核心工程原则
+
+1. 本次回答与长期入库分离：Observation 可立即回答，知识发布最终一致。
+2. 工具输出均有来源、时间和 content hash，不把无溯源文本写入知识库。
+3. Agent 探索必须有域名、深度、页面、轮次和耗时预算。
+4. Neo4j/Qdrant 写入采用幂等 Patch、读后校验和可恢复任务，不伪装成跨库强事务。
+5. 前端展示可审计决策摘要和工具结果，不展示隐藏思维链。
+6. 每轮需求先写 PRD，代码后有测试、真实验证、迭代记录与 Git 提交。
+
+## 8. 后续路线
+
+- 页面质量门控：index / evidence_only / discard；
+- 页面 TTL、变化频率与价值驱动的 Freshness Scheduler；
+- DOM Diff 与变化 Block 的局部 Embedding；
+- 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
+- OpenTelemetry/Prometheus 与运营面板；
+- 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
+- 增量 Entity/Topic 抽取和双时态知识演进。
+
+## 9. 对应文档
+
+- `docs/QUERY_DRIVEN_GRAPH_AGENT_PRD.md`：Agent MVP；
+- `docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md`：增量入图；
+- `docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`：可靠性优化；
+- `docs/ASYNC_INCREMENTAL_INDEXING_PRD.md`：异步入图；
+- 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
+
+简历写法和面试准备将在架构能力稳定、关键指标补齐后写入本文后续章节，避免把尚未验证的工程指标提前包装为成果。

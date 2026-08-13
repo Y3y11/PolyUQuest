@@ -58,6 +58,7 @@ export interface AgentExplorationSummary {
   frontier_candidates_seen: number;
   temporary_evidence_blocks: number;
   patches_published: number;
+  indexing_jobs_queued: number;
   stop_reason: string;
 }
 

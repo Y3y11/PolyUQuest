@@ -246,6 +246,22 @@ class PatchStore:
                 if patch.status in wanted
             ][:limit]
 
+    def delete_if_staged(self, patch_id: str) -> bool:
+        """Remove a duplicate Patch only while it has never been published."""
+        if self._ledger is not None:
+            with self._ledger.connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM graph_patches WHERE patch_id=? AND status='staged'",
+                    (patch_id,),
+                )
+            return cursor.rowcount == 1
+        with self._lock:
+            patch = self._records.get(patch_id)
+            if patch is None or patch.status != "staged":
+                return False
+            del self._records[patch_id]
+            return True
+
 
 _ledger_path = settings.agent_ledger_path
 observation_store = ObservationStore(max_records=2048, db_path=_ledger_path)

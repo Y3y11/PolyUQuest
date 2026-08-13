@@ -123,6 +123,14 @@ class StagePatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool.run(StagePatchInput(observation_id="obs-1", run_id="run-2"))
 
+    def test_duplicate_patch_can_only_be_discarded_while_staged(self) -> None:
+        observations = _observation_store()
+        patches = PatchStore()
+        tool = StagePatchTool(observations=observations, patches=patches)
+        patch = tool.run(StagePatchInput(observation_id="obs-1", run_id="run-1"))
+        self.assertTrue(tool.discard_duplicate(patch.patch_id))
+        self.assertIsNone(patches.get(patch.patch_id))
+
 
 class PublishPatchTests(unittest.TestCase):
     def _tools(self, graph):

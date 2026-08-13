@@ -144,6 +144,17 @@ for local development. See
 and [`docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`](docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md)
 for the write and recovery contracts.
 
+By default, durable indexing is asynchronous: the request stores its Observation,
+stages a Patch, and enqueues a SQLite Outbox job; an in-process Index Worker
+publishes the Patch to Neo4j/Qdrant with lease-based retries. Operational APIs:
+
+- `GET /api/indexing/jobs` and `/api/indexing/jobs/{job_id}`;
+- `GET /api/indexing/stats`;
+- `POST /api/indexing/jobs/{job_id}/retry`.
+
+Set `AGENT_ASYNC_INDEXING=false` to fall back to synchronous publishing, or
+`INDEX_WORKER_ENABLED=false` when running a separately managed worker.
+
 Agent query analysis uses an open-domain `entity + qualifier + intent +
 required_claim` contract. Institution names and seed labels live in connector
 configuration; the core planner/evaluator does not contain PolyU department or

@@ -24,6 +24,7 @@ class HealthEndpointTests(unittest.TestCase):
                     startup_complete=True,
                     embedding_ready=False,
                     bm25_ready=True,
+                    index_worker=SimpleNamespace(is_running=True),
                 )
             )
         )
@@ -40,6 +41,7 @@ class HealthEndpointTests(unittest.TestCase):
                     startup_complete=True,
                     embedding_ready=True,
                     bm25_ready=True,
+                    index_worker=SimpleNamespace(is_running=True),
                 )
             )
         )

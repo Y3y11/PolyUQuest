@@ -20,7 +20,8 @@ from agent_rag.agent.schemas import (
     AgentQueryResponse,
     ExplorationSummary,
 )
-from agent_rag.config import agent_config, llm_config, stage_model
+from agent_rag.config import agent_config, llm_config, settings, stage_model
+from agent_rag.indexing.outbox import IndexOutbox, index_outbox
 from agent_rag.tools._ranking import expanded_query, frontier_score, lexical_score
 from agent_rag.tools.observations import ObservationStore, observation_store
 from agent_rag.tools.schemas import (
@@ -115,6 +116,7 @@ class QueryDrivenAgent:
         composer: AnswerComposer | None = None,
         observations: ObservationStore = observation_store,
         snapshot_tool: PageSnapshotTool | None = None,
+        indexing_outbox: IndexOutbox = index_outbox,
     ):
         if search_tool is None:
             from agent_rag.tools.search import SearchTool
@@ -150,6 +152,7 @@ class QueryDrivenAgent:
 
             snapshot_tool = PageSnapshotTool()
         self.snapshot_tool = snapshot_tool
+        self.indexing_outbox = indexing_outbox
 
     async def run(
         self, request: AgentQueryRequest, emit: EmitCallback | None = None
@@ -550,43 +553,88 @@ class QueryDrivenAgent:
 
             if request.persist_discoveries and record_data is not None:
                 publish_started = time.perf_counter()
+                action_name = (
+                    "polyuquest.queue_index_patch"
+                    if settings.agent_async_indexing
+                    else "polyuquest.publish_patch"
+                )
                 await record(
-                    "polyuquest.publish_patch",
+                    action_name,
                     "started",
                     observation_id=fetched.observation_id,
                 )
                 try:
-                    patch = await asyncio.to_thread(
-                        self.stage_patch_tool.run,
-                        StagePatchInput(observation_id=fetched.observation_id, run_id=run_id),
-                    )
-                    published = await asyncio.to_thread(
-                        self.publish_patch_tool.run, PublishPatchInput(patch_id=patch.patch_id)
-                    )
-                    if published.patch.status == "published":
-                        summary.patches_published += 1
-                        for item in evidence:
-                            if item.observation_id == fetched.observation_id:
-                                item.temporary = False
-                    await record(
-                        "polyuquest.publish_patch",
-                        "succeeded" if published.read_after_write_ok else "failed",
-                        int((time.perf_counter() - publish_started) * 1000),
-                        patch_id=patch.patch_id,
-                        patch_status=published.patch.status,
-                        operation=published.patch.operation,
-                        previous_content_hash=published.patch.previous_content_hash,
-                        content_hash=published.patch.content_hash,
-                        webpages_written=published.webpages_written,
-                        blocks_written=published.blocks_written,
-                        links_written=published.links_written,
-                        blocks_deleted=published.blocks_deleted,
-                        links_deleted=published.links_deleted,
-                        read_after_write_ok=published.read_after_write_ok,
-                    )
+                    if settings.agent_async_indexing:
+                        existing_job = await asyncio.to_thread(
+                            self.indexing_outbox.get_by_snapshot,
+                            str(record_data.metadata.get("url", "")),
+                            str(record_data.metadata.get("content_hash", "")),
+                        )
+                        if existing_job is None:
+                            patch = await asyncio.to_thread(
+                                self.stage_patch_tool.run,
+                                StagePatchInput(
+                                    observation_id=fetched.observation_id,
+                                    run_id=run_id,
+                                ),
+                            )
+                            job, created = await asyncio.to_thread(
+                                self.indexing_outbox.enqueue, patch
+                            )
+                            if not created and job.patch_id != patch.patch_id:
+                                await asyncio.to_thread(
+                                    self.stage_patch_tool.discard_duplicate,
+                                    patch.patch_id,
+                                )
+                        else:
+                            job, created = existing_job, False
+                        summary.indexing_jobs_queued += int(created)
+                        await record(
+                            action_name,
+                            "succeeded",
+                            int((time.perf_counter() - publish_started) * 1000),
+                            patch_id=job.patch_id,
+                            job_id=job.job_id,
+                            job_status=job.status,
+                            deduplicated=not created,
+                            content_hash=job.content_hash,
+                        )
+                    else:
+                        patch = await asyncio.to_thread(
+                            self.stage_patch_tool.run,
+                            StagePatchInput(
+                                observation_id=fetched.observation_id,
+                                run_id=run_id,
+                            ),
+                        )
+                        published = await asyncio.to_thread(
+                            self.publish_patch_tool.run,
+                            PublishPatchInput(patch_id=patch.patch_id),
+                        )
+                        if published.patch.status == "published":
+                            summary.patches_published += 1
+                            for item in evidence:
+                                if item.observation_id == fetched.observation_id:
+                                    item.temporary = False
+                        await record(
+                            action_name,
+                            "succeeded" if published.read_after_write_ok else "failed",
+                            int((time.perf_counter() - publish_started) * 1000),
+                            patch_id=patch.patch_id,
+                            patch_status=published.patch.status,
+                            operation=published.patch.operation,
+                            previous_content_hash=published.patch.previous_content_hash,
+                            content_hash=published.patch.content_hash,
+                            webpages_written=published.webpages_written,
+                            blocks_written=published.blocks_written,
+                            links_written=published.links_written,
+                            blocks_deleted=published.blocks_deleted,
+                            links_deleted=published.links_deleted,
+                            read_after_write_ok=published.read_after_write_ok,
+                        )
                 except Exception as exc:
                     await record(
-                        "polyuquest.publish_patch",
+                        action_name,
                         "failed",
                         int((time.perf_counter() - publish_started) * 1000),
                         error=str(exc),

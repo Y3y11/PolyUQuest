@@ -10,7 +10,13 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent_rag.api.routes import agent_router, graph_router, health_router, query_router
+from agent_rag.api.routes import (
+    agent_router,
+    graph_router,
+    health_router,
+    indexing_router,
+    query_router,
+)
 from agent_rag.config import settings
 from agent_rag.retrieval import _bm25, _embedding
 
@@ -22,6 +28,7 @@ async def _lifespan(app: FastAPI):
     app.state.startup_complete = False
     app.state.embedding_ready = False
     app.state.bm25_ready = False
+    app.state.index_worker = None
     # Warm BM25 in a background thread so it doesn't block startup. The cold
     # build is several minutes on a full corpus; after the first warm run we
     # persist to disk, so subsequent restarts are near-instant. If a query
@@ -56,8 +63,12 @@ async def _lifespan(app: FastAPI):
             )
         except Exception as exc:
             logger.warning("patch_recovery_scan_failed", error=str(exc))
-    app.state.startup_complete = True
-    yield
+    from agent_rag.indexing.worker import index_worker_lifespan
+
+    async with index_worker_lifespan() as worker:
+        app.state.index_worker = worker
+        app.state.startup_complete = True
+        yield
 
 
 app = FastAPI(
@@ -84,6 +95,7 @@ app.include_router(query_router.router, prefix="/api", tags=["query"])
 app.include_router(agent_router.router, prefix="/api", tags=["agent"])
 app.include_router(graph_router.router, prefix="/api", tags=["graph"])
 app.include_router(health_router.router, prefix="/api", tags=["health"])
+app.include_router(indexing_router.router, prefix="/api", tags=["indexing"])
 
 
 def start():

@@ -64,6 +64,7 @@ class HealthResponse(BaseModel):
     embedding: bool | None = None
     bm25: bool | None = None
     startup_complete: bool | None = None
+    index_worker: bool | None = None
 
 
 class GraphDataRequest(BaseModel):

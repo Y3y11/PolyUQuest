@@ -73,6 +73,9 @@ class StagePatchTool:
         self._patches.put(patch)
         return patch
 
+    def discard_duplicate(self, patch_id: str) -> bool:
+        return self._patches.delete_if_staged(patch_id)
+
 
 class PublishPatchTool:
     name = "polyuquest.publish_patch"
