@@ -15,6 +15,7 @@ import {
   Filter,
   Shuffle,
   Layers,
+  FileText,
 } from "lucide-react";
 import type { PipelineStep } from "@/lib/api";
 
@@ -42,6 +43,11 @@ const STEP_THEME: Record<string, StepTheme> = {
   hybrid_parallel:   { icon: SplitSquareHorizontal,ring: "bg-rose-500/15   border-rose-500/35",   iconColor: "text-rose-500"    },
   hybrid_merge:      { icon: Layers,               ring: "bg-rose-500/15   border-rose-500/35",   iconColor: "text-rose-500"    },
   answer_generation: { icon: Cpu,                  ring: "bg-violet-500/15 border-violet-500/35", iconColor: "text-violet-500"  },
+  polyuquest_search:  { icon: Search,               ring: "bg-blue-500/15 border-blue-500/35",     iconColor: "text-blue-500"    },
+  polyuquest_expand:  { icon: GitBranch,            ring: "bg-emerald-500/15 border-emerald-500/35", iconColor: "text-emerald-500" },
+  web_fetch_trusted_page: { icon: FileText,         ring: "bg-amber-500/15 border-amber-500/35",   iconColor: "text-amber-500"   },
+  answer_compose:     { icon: Cpu,                  ring: "bg-violet-500/15 border-violet-500/35", iconColor: "text-violet-500"  },
+  evidence_assessment:{ icon: BarChart3,            ring: "bg-rose-500/15 border-rose-500/35",     iconColor: "text-rose-500"    },
 };
 
 const DEFAULT_THEME: StepTheme = {
@@ -152,6 +158,20 @@ function summariseStep(step: PipelineStep): string {
       if (skip) return "skipped";
       return tok != null ? `~${tok} prompt tokens` : "generating…";
     }
+    case "polyuquest_search":
+      return `${d.evidence ?? 0} evidence · ${d.frontier ?? 0} frontier seeds`;
+    case "polyuquest_expand":
+      return `${d.candidates ?? 0} trusted candidates`;
+    case "web_fetch_trusted_page":
+      return `${d.relevant_blocks ?? 0} relevant blocks · ${String(d.status ?? "done")}`;
+    case "evidence_assessment": {
+      const confidence = typeof d.confidence === "number"
+        ? `${Math.round(d.confidence * 100)}% confidence`
+        : null;
+      return [String(d.decision ?? "assessing"), confidence].filter(Boolean).join(" · ");
+    }
+    case "answer_compose":
+      return `${String(d.status ?? "done")} · ${d.evidence ?? 0} evidence blocks`;
     default: {
       // Fallback: show first numeric-looking field, otherwise blank.
       const entry = Object.entries(d).find(

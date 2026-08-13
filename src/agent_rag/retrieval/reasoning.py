@@ -11,7 +11,7 @@ import json_repair
 import structlog
 from jinja2 import Template
 
-from agent_rag.config import llm_config, thresholds_config
+from agent_rag.config import llm_config, stage_model, thresholds_config
 from agent_rag.llm.client import LLMClient, cost_stage
 from agent_rag.retrieval import _bm25, _rewriter
 from agent_rag.retrieval._context import collect_related_links
@@ -65,7 +65,7 @@ SAME_PAGE_DISCOUNT = _scoring.get("same_page_discount", 0.5)
 CONTEXT_BUDGET = _scoring.get("context_budget", 4000)
 TOP_ENTITY_LIMIT = int(_scoring.get("top_entity_limit", 30))
 
-_GENERATION_MODEL = (llm_config.get("generation", {}) or {}).get("model")
+_GENERATION_MODEL = stage_model("generation")
 _GENERATION_MAX_TOKENS = int((llm_config.get("generation", {}) or {}).get("max_tokens", 2048))
 
 _KW_TMPL = Template(

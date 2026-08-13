@@ -5,6 +5,10 @@
 # firecrawl-map     — URL discovery only (no content)
 fetcher: firecrawl-crawl
 
+# Connector-owned identity that applies to every configured seed. Other
+# institutions replace this value; Agent core never imports or interprets it.
+site_identity: The Hong Kong Polytechnic University PolyU 香港理工大学
+
 seed_urls:
   # 站点根 — Firecrawl 从根做 BFS，覆盖 /media, /study, /about-polyu, /research 等站级板块
   - https://www.polyu.edu.hk/
@@ -50,6 +54,50 @@ seed_urls:
   - https://www.polyu.edu.hk/shtm/      # School of Hotel and Tourism Management
   - https://www.polyu.edu.hk/gs/        # Graduate School
   - https://www.polyu.edu.hk/cus/       # College of Undergraduate Studies
+
+# Optional connector metadata used only to rank a cold-start Agent frontier.
+# Core Agent code treats these as opaque site-owned aliases; another intranet
+# supplies its own labels without changing query planning or evidence logic.
+seed_labels:
+  https://www.polyu.edu.hk/: The Hong Kong Polytechnic University PolyU
+  https://www.polyu.edu.hk/fcms/: Faculty of Computer and Mathematical Sciences
+  https://www.polyu.edu.hk/comp/: Department of Computing COMP
+  https://www.polyu.edu.hk/dsai/: Department of Data Science and Artificial Intelligence DSAI
+  https://www.polyu.edu.hk/ama/: Department of Applied Mathematics AMA
+  https://www.polyu.edu.hk/fce/: Faculty of Construction and Environment FCE
+  https://www.polyu.edu.hk/beee/: Department of Building Environment and Energy Engineering BEEE
+  https://www.polyu.edu.hk/bre/: Department of Building and Real Estate BRE
+  https://www.polyu.edu.hk/cee/: Department of Civil and Environmental Engineering CEE
+  https://www.polyu.edu.hk/lsgi/: Department of Land Surveying and Geo-Informatics LSGI
+  https://www.polyu.edu.hk/fb/: Faculty of Business
+  https://www.polyu.edu.hk/lms/: Department of Logistics and Maritime Studies LMS
+  https://www.polyu.edu.hk/mm/: Department of Management and Marketing MM
+  https://www.polyu.edu.hk/af/: School of Accounting and Finance AF
+  https://www.polyu.edu.hk/feng/: Faculty of Engineering
+  https://www.polyu.edu.hk/bme/: Department of Biomedical Engineering BME
+  https://www.polyu.edu.hk/eee/: Department of Electrical and Electronic Engineering EEE
+  https://www.polyu.edu.hk/aae/: Department of Aeronautical and Aviation Engineering AAE
+  https://www.polyu.edu.hk/ise/: Department of Industrial and Systems Engineering ISE
+  https://www.polyu.edu.hk/me/: Department of Mechanical Engineering ME
+  https://www.polyu.edu.hk/fhss/: Faculty of Health and Social Sciences FHSS
+  https://www.polyu.edu.hk/apss/: Department of Applied Social Sciences APSS
+  https://www.polyu.edu.hk/hti/: Department of Health Technology and Informatics HTI
+  https://www.polyu.edu.hk/rs/: Department of Rehabilitation Sciences RS
+  https://www.polyu.edu.hk/sn/: School of Nursing SN
+  https://www.polyu.edu.hk/so/: School of Optometry SO
+  https://www.polyu.edu.hk/en/fh/: Faculty of Humanities
+  https://www.polyu.edu.hk/chc/: Department of Chinese History and Culture CHC
+  https://www.polyu.edu.hk/engl/: Department of English and Communication ENGL
+  https://www.polyu.edu.hk/lst/: Department of Language Science and Technology LST
+  https://www.polyu.edu.hk/fs/: Faculty of Science
+  https://www.polyu.edu.hk/abct/: Department of Applied Biology and Chemical Technology ABCT
+  https://www.polyu.edu.hk/ap/: Department of Applied Physics AP
+  https://www.polyu.edu.hk/fsn/: Department of Food Science and Nutrition FSN
+  https://www.polyu.edu.hk/sd/: School of Design SD
+  https://www.polyu.edu.hk/sft/: School of Fashion and Textiles SFT
+  https://www.polyu.edu.hk/shtm/: School of Hotel and Tourism Management SHTM
+  https://www.polyu.edu.hk/gs/: Graduate School
+  https://www.polyu.edu.hk/cus/: College of Undergraduate Studies
 
 
 domain_whitelist:

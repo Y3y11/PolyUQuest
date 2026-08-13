@@ -23,7 +23,7 @@ import json_repair
 import structlog
 from jinja2 import Template
 
-from agent_rag.config import thresholds_config
+from agent_rag.config import llm_config, thresholds_config
 from agent_rag.llm.client import LLMClient, cost_stage
 from agent_rag.retrieval._cache import normalize_query, router_cache
 
@@ -37,6 +37,9 @@ _ROUTE_TMPL = Template(
 _router_cfg = thresholds_config.get("retrieval", {}).get("router", {})
 _DEFAULT_LLM_CONFIDENCE = float(_router_cfg.get("default_llm_confidence", 0.7))
 _DISABLE_HYBRID = bool(_router_cfg.get("disable_hybrid", False))
+_routing_llm_cfg = llm_config.get("routing", {}) or {}
+_ROUTING_TEMPERATURE = float(_routing_llm_cfg.get("temperature", 0.0))
+_ROUTING_MAX_TOKENS = int(_routing_llm_cfg.get("max_tokens", 256))
 
 
 def _strip_hybrid_if_disabled(decision: dict[str, Any]) -> dict[str, Any]:
@@ -54,6 +57,17 @@ _MODE_B_SIGNALS = [
     r"分别", r"各自", r"respectively", r"和.*是什么",
     r"admission.*fee", r"tuition.*scholarship",
     r"requirements?.*and.*(fee|tuition|scholarship|deadline|cost)",
+]
+
+_MODE_A_PROCEDURAL_SIGNALS = [
+    # The query-driven Agent performs cross-page expansion after this initial
+    # knowledge-base lookup. A direct block lookup is the cheapest first
+    # action for open-domain how-to questions and avoids an LLM classifier.
+    r"怎么[^？?]{1,80}",
+    r"如何[^？?]{1,80}",
+    r"(?:步骤|流程|操作指南)",
+    r"\bhow\s+(?:to|do|can|should)\b",
+    r"\b(?:steps?|procedure|instructions?)\s+(?:to|for)\b",
 ]
 
 _MODE_C_SIGNALS = [
@@ -183,6 +197,9 @@ def _heuristic_route(
 
     c_hit = next((p for p in _MODE_C_SIGNALS if re.search(p, q_lower)), None)
     b_hit = next((p for p in _MODE_B_SIGNALS if re.search(p, q_lower)), None)
+    a_hit = next(
+        (p for p in _MODE_A_PROCEDURAL_SIGNALS if re.search(p, q_lower)), None
+    )
 
     # Mixed: entity-list signal + specific named person → defer to LLM
     if c_hit and _has_mode_a_person(query):
@@ -192,6 +209,8 @@ def _heuristic_route(
         return "mode_c", c_hit
     if b_hit and "mode_b" in allowed_modes:
         return "mode_b", b_hit
+    if a_hit and "mode_a" in allowed_modes:
+        return "mode_a", a_hit
     return None, None
 
 
@@ -299,7 +318,8 @@ def route_query(
         with cost_stage("router"):
             raw = llm.chat(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
+                temperature=_ROUTING_TEMPERATURE,
+                max_tokens=_ROUTING_MAX_TOKENS,
                 response_format={"type": "json_object"},
                 use_cache=True,
             )
@@ -319,9 +339,7 @@ def route_query(
         confidence = max(0.0, min(1.0, confidence))
 
         alt_mode = data.get("alt_mode")
-        if alt_mode not in _VALID_MODES or alt_mode == raw_mode:
-            alt_mode = None
-        elif alt_mode not in allowed:
+        if alt_mode not in _VALID_MODES or alt_mode == raw_mode or alt_mode not in allowed:
             alt_mode = None
 
         # Auto-fill alt_mode for borderline LLM confidence (0.6–0.75 range)
@@ -330,18 +348,18 @@ def route_query(
         # the LLM often picks one valid mode but doesn't surface a second
         # plausible one — leaving alt_mode null suppresses hybrid even when
         # confidence says we're not certain.
-        _AUTO_ALT_MIN_CONF = 0.6
-        _AUTO_ALT_MAX_CONF = 0.75
-        _AUTO_ALT_BY_MODE = {
+        auto_alt_min_conf = 0.6
+        auto_alt_max_conf = 0.75
+        auto_alt_by_mode = {
             "mode_a": "mode_b",
             "mode_b": "mode_c",
             "mode_c": "mode_b",
         }
         if (
             alt_mode is None
-            and _AUTO_ALT_MIN_CONF <= confidence < _AUTO_ALT_MAX_CONF
+            and auto_alt_min_conf <= confidence < auto_alt_max_conf
         ):
-            candidate = _AUTO_ALT_BY_MODE.get(raw_mode)
+            candidate = auto_alt_by_mode.get(raw_mode)
             if candidate in allowed:
                 alt_mode = candidate
 

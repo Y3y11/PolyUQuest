@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any
 
 import structlog
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, OpenAI, RateLimitError
+from openai import AsyncOpenAI, OpenAI
 
 from agent_rag.config import llm_config, settings
 from agent_rag.storage.llm_cache import get_chat_cached, set_chat_cached
@@ -40,6 +40,8 @@ _USAGE_TOTALS: dict[str, int] = {
 # up in the canonical table unless added here.
 KNOWN_STAGES: tuple[str, ...] = (
     "router",
+    "query_profile",
+    "frontier_selection",
     "rewriter",
     "reasoning_extract",
     "answer",

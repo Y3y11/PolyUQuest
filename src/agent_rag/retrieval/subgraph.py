@@ -25,7 +25,7 @@ import json_repair
 import structlog
 from jinja2 import Template
 
-from agent_rag.config import llm_config, thresholds_config
+from agent_rag.config import llm_config, stage_model, thresholds_config
 from agent_rag.llm.client import LLMClient, cost_stage
 from agent_rag.retrieval._context import collect_related_links
 from agent_rag.retrieval._embedding import embed_query
@@ -67,7 +67,7 @@ EDGE_CAP = int(_scoring.get("subgraph_edge_cap", 40))
 SUBGRAPH_DESC_CHARS = int(_scoring.get("subgraph_desc_chars", 140))
 SUBGRAPH_REL_DESC_CHARS = int(_scoring.get("subgraph_rel_desc_chars", 120))
 
-_GENERATION_MODEL = (llm_config.get("generation", {}) or {}).get("model")
+_GENERATION_MODEL = stage_model("generation")
 _GENERATION_MAX_TOKENS = int((llm_config.get("generation", {}) or {}).get("max_tokens", 2048))
 
 _ANSWER_TMPL = Template(

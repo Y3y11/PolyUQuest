@@ -25,6 +25,7 @@ from agent_rag.config import settings
 logger = structlog.get_logger(__name__)
 
 _model = None
+_model_lock = threading.Lock()
 _api_client: OpenAI | None = None
 _async_api_client: AsyncOpenAI | None = None
 
@@ -93,10 +94,18 @@ def _cache_put_many(items: dict[str, list[float]]) -> None:
 def _get_local_model():
     global _model
     if _model is None:
-        logger.info("loading_local_embedding_model", model=settings.embedding_model)
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(settings.embedding_model)
+        with _model_lock:
+            if _model is None:
+                logger.info("loading_local_embedding_model", model=settings.embedding_model)
+                from sentence_transformers import SentenceTransformer
+                _model = SentenceTransformer(settings.embedding_model)
     return _model
+
+
+def warmup() -> None:
+    """Load and execute the embedding backend before the first user query."""
+    if settings.embedding_provider == "local":
+        embed_texts(["retrieval warmup"], use_cache=False)
 
 
 def _resolve_api_credentials() -> tuple[str, str]:

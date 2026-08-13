@@ -20,7 +20,7 @@ from typing import Any, Callable
 import structlog
 from jinja2 import Template
 
-from agent_rag.config import llm_config, thresholds_config
+from agent_rag.config import llm_config, stage_model, thresholds_config
 from agent_rag.llm.client import LLMClient, cost_stage
 from agent_rag.retrieval._context import collect_related_links
 from agent_rag.retrieval.direct import retrieve_direct
@@ -34,7 +34,7 @@ logger = structlog.get_logger(__name__)
 _hybrid_cfg = thresholds_config.get("retrieval", {}).get("hybrid", {})
 MAX_MERGED_BLOCKS = int(_hybrid_cfg.get("max_blocks", 10))
 
-_GENERATION_MODEL = (llm_config.get("generation", {}) or {}).get("model")
+_GENERATION_MODEL = stage_model("generation")
 _GENERATION_MAX_TOKENS = int((llm_config.get("generation", {}) or {}).get("max_tokens", 2048))
 
 _ANSWER_TMPL = Template(

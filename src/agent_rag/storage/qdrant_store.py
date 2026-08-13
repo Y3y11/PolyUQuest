@@ -371,6 +371,7 @@ class QdrantStore:
                 FieldCondition(
                     key="last_seen_build_id", match=MatchValue(value=current_build_id)
                 ),
+                FieldCondition(key="source_type", match=MatchValue(value="agent_fetch")),
             ],
         )
         orphans: list[int] = []
@@ -408,6 +409,7 @@ class QdrantStore:
                 FieldCondition(
                     key="last_seen_build_id", match=MatchValue(value=current_build_id)
                 ),
+                FieldCondition(key="source_type", match=MatchValue(value="agent_fetch")),
             ],
         )
         self._client.delete(

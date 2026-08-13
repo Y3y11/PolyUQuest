@@ -1,0 +1,17 @@
+controller:
+  max_iterations: 3
+  max_pages: 5
+  max_depth: 3
+  max_seconds: 90
+  fetches_per_iteration: 1
+
+evidence:
+  min_lexical_coverage: 0.18
+  min_dense_score: 0.42
+  min_reranker_score: 0.20
+  min_answer_confidence: 0.30
+  fresh_ttl_hours: 168
+
+fetch:
+  timeout_seconds: 15
+  max_bytes: 5000000

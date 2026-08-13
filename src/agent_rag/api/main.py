@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from contextlib import asynccontextmanager
 
@@ -9,9 +10,9 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent_rag.api.routes import graph_router, health_router, query_router
+from agent_rag.api.routes import agent_router, graph_router, health_router, query_router
 from agent_rag.config import settings
-from agent_rag.retrieval import _bm25
+from agent_rag.retrieval import _bm25, _embedding
 
 logger = structlog.get_logger(__name__)
 
@@ -29,6 +30,13 @@ async def _lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("bm25_warmup_failed", error=str(exc))
     threading.Thread(target=_warm, name="bm25-warmup", daemon=True).start()
+    # Loading a local transformer can take ~20s. Treat it as readiness work so
+    # the server accepts traffic only after query embedding is usable; otherwise
+    # that cost appears unpredictably inside the first user's search action.
+    try:
+        await asyncio.to_thread(_embedding.warmup)
+    except Exception as exc:
+        logger.warning("embedding_warmup_failed", error=str(exc))
     yield
 
 
@@ -53,6 +61,7 @@ else:
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 app.include_router(query_router.router, prefix="/api", tags=["query"])
+app.include_router(agent_router.router, prefix="/api", tags=["agent"])
 app.include_router(graph_router.router, prefix="/api", tags=["graph"])
 app.include_router(health_router.router, prefix="/api", tags=["health"])
 

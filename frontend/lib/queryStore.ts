@@ -36,6 +36,7 @@ interface QueryStoreState {
   endStream: () => void;
   setRouting: (info: RoutingInfo) => void;
   pushStep: (step: PipelineStep) => void;
+  setSteps: (steps: PipelineStep[]) => void;
   setBlocks: (blocks: BlockRef[]) => void;
   setCacheHit: (hit: boolean) => void;
   setElapsed: (seconds: number) => void;
@@ -94,6 +95,7 @@ export const useQueryStore = create<QueryStoreState>((set) => ({
   endStream: () => set({ isStreaming: false }),
   setRouting: (info) => set({ routing: info }),
   pushStep: (step) => set((s) => ({ steps: [...s.steps, step] })),
+  setSteps: (steps) => set({ steps }),
   setBlocks: (blocks) => set({ blocks }),
   setCacheHit: (hit) => set({ cacheHit: hit }),
   setElapsed: (seconds) => set({ elapsedSeconds: seconds }),

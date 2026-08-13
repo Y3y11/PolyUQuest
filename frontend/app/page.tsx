@@ -23,8 +23,11 @@ import TopNav from "@/components/TopNav";
 import PersonaPicker from "@/components/PersonaPicker";
 import SuggestionBubbles from "@/components/SuggestionBubbles";
 import {
-  queryStreamAPI,
+  agentQueryStreamAPI,
   recentHistory,
+  type AgentActivity,
+  type AgentAction,
+  type AgentAssessment,
   type BlockRef,
   type PipelineStep,
   type QueryResponse,
@@ -34,6 +37,83 @@ import { useQueryStore, selectHighlightedCite } from "@/lib/queryStore";
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  agentActivity?: AgentActivity[];
+}
+
+function updateLatestAssistant(
+  messages: ChatMessage[],
+  update: (message: ChatMessage) => ChatMessage
+): ChatMessage[] {
+  const index = messages.findLastIndex((message) => message.role === "assistant");
+  if (index < 0) return messages;
+  const next = [...messages];
+  next[index] = update(next[index]);
+  return next;
+}
+
+function mergeAgentActivity(
+  activities: AgentActivity[] = [],
+  incoming: AgentActivity
+): AgentActivity[] {
+  if (incoming.kind !== "action" || incoming.action.status === "started") {
+    return [...activities, incoming];
+  }
+
+  const pendingIndex = activities.findLastIndex(
+    (item) =>
+      item.kind === "action" &&
+      item.action.action === incoming.action.action &&
+      item.action.status === "started"
+  );
+  if (pendingIndex < 0) return [...activities, incoming];
+
+  const next = [...activities];
+  const pending = next[pendingIndex];
+  next[pendingIndex] =
+    pending.kind === "action"
+      ? {
+          kind: "action",
+          action: {
+            ...incoming.action,
+            details: {
+              ...pending.action.details,
+              ...incoming.action.details,
+            },
+          },
+        }
+      : incoming;
+  return next;
+}
+
+const AGENT_STEP_LABELS: Record<string, string> = {
+  "polyuquest.search": "Search indexed PolyUQuest knowledge",
+  "polyuquest.expand": "Expand graph frontier",
+  "web.fetch_trusted_page": "Fetch trusted institutional page",
+  "polyuquest.publish_patch": "Publish knowledge patch",
+  "answer.compose": "Compose grounded answer",
+};
+
+function actionToPipelineStep(action: AgentAction): PipelineStep | null {
+  if (action.status === "started") return null;
+  return {
+    step: action.action.replaceAll(".", "_"),
+    label: AGENT_STEP_LABELS[action.action] || action.action,
+    duration_ms: action.duration_ms,
+    data: { status: action.status, ...action.details },
+  };
+}
+
+function assessmentToPipelineStep(assessment: AgentAssessment): PipelineStep {
+  return {
+    step: "evidence_assessment",
+    label: "Assess evidence gap",
+    duration_ms: 0,
+    data: {
+      decision: assessment.decision,
+      confidence: assessment.confidence,
+      reasons: assessment.reasons,
+    },
+  };
 }
 
 function ValuePropRow() {
@@ -132,12 +212,6 @@ export default function HomePage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // Token coalescing: tokens arrive faster than the browser can paint, and each
-  // one re-clones `messages` + re-parses the whole answer through ReactMarkdown.
-  // We buffer the latest accumulated text and flush it to React state at most
-  // once per animation frame, so rendering stays smooth instead of stuttering.
-  const pendingAnswerRef = useRef<string | null>(null);
-  const rafRef = useRef<number | null>(null);
 
   // store slice — granular selectors keep rerenders local
   const isLoading = useQueryStore((s) => s.isStreaming);
@@ -154,52 +228,13 @@ export default function HomePage() {
   const endStream = useQueryStore((s) => s.endStream);
   const setRouting = useQueryStore((s) => s.setRouting);
   const pushStep = useQueryStore((s) => s.pushStep);
+  const setSteps = useQueryStore((s) => s.setSteps);
   const setBlocksAct = useQueryStore((s) => s.setBlocks);
-  const setCacheHitAct = useQueryStore((s) => s.setCacheHit);
   const setElapsed = useQueryStore((s) => s.setElapsed);
-  const setSuggestionsAct = useQueryStore((s) => s.setSuggestions);
   const setHoveredCite = useQueryStore((s) => s.setHoveredCite);
   const setSelectedCite = useQueryStore((s) => s.setSelectedCite);
   const setStage = useQueryStore((s) => s.setStage);
   const resetStore = useQueryStore((s) => s.reset);
-
-  // Apply the latest buffered answer text to React state. Updating `messages`
-  // and `liveAnswer` together in one pass keeps the assistant bubble and the
-  // scroll effect in sync while only paying the ReactMarkdown re-parse cost
-  // once per frame.
-  const flushPendingAnswer = useCallback(() => {
-    rafRef.current = null;
-    const text = pendingAnswerRef.current;
-    if (text === null) return;
-    pendingAnswerRef.current = null;
-    setLiveAnswer(text);
-    setMessages((prev) => {
-      const last = prev[prev.length - 1];
-      if (!last || last.role !== "assistant" || last.content === text) return prev;
-      const next = [...prev];
-      next[next.length - 1] = { role: "assistant", content: text };
-      return next;
-    });
-  }, []);
-
-  // Buffer a token and schedule (at most) one flush per animation frame.
-  const scheduleAnswer = useCallback(
-    (text: string) => {
-      pendingAnswerRef.current = text;
-      if (rafRef.current === null) {
-        rafRef.current = requestAnimationFrame(flushPendingAnswer);
-      }
-    },
-    [flushPendingAnswer]
-  );
-
-  // Cancel any pending frame on unmount so a late flush can't touch a
-  // torn-down tree.
-  useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -235,21 +270,31 @@ export default function HomePage() {
     setLiveAnswer("");
     beginStream();
 
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: "", agentActivity: [] },
+    ]);
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    let collected = "";
     let collectedBlocks: BlockRef[] = [];
     let collectedTrace: PipelineStep[] = [];
     let mode = "";
     let elapsed = 0;
 
+    const appendActivity = (activity: AgentActivity) => {
+      setMessages((prev) =>
+        updateLatestAssistant(prev, (message) => ({
+          ...message,
+          agentActivity: mergeAgentActivity(message.agentActivity, activity),
+        }))
+      );
+    };
+
     try {
-      await queryStreamAPI(
+      await agentQueryStreamAPI(
         userMsg,
-        undefined,
         {
           onRouting: (data) => {
             mode = data.mode;
@@ -260,43 +305,41 @@ export default function HomePage() {
               confidence: data.confidence,
             });
           },
-          onRetrievalStep: (step) => {
+          onAction: (action) => {
+            appendActivity({ kind: "action", action });
+            const step = actionToPipelineStep(action);
+            if (step) {
+              collectedTrace = [...collectedTrace, step];
+              pushStep(step);
+            }
+          },
+          onAssessment: (assessment) => {
+            appendActivity({ kind: "assessment", assessment });
+            const step = assessmentToPipelineStep(assessment);
             collectedTrace = [...collectedTrace, step];
             pushStep(step);
           },
-          onBlocks: (incoming) => {
+          onEvidence: (incoming) => {
             collectedBlocks = incoming;
             setBlocksAct(incoming);
           },
-          onCache: ({ hit }) => {
-            setCacheHitAct(hit);
-          },
-          onToken: (text) => {
-            collected += text;
-            scheduleAnswer(collected);
-          },
-          onSuggestions: (items) => {
-            setSuggestionsAct(items, userMsg);
-          },
-          onDone: (data) => {
-            // Drop any buffered frame — we're about to write the authoritative
-            // final answer, and a late flush would clobber it with stale text.
-            if (rafRef.current !== null) {
-              cancelAnimationFrame(rafRef.current);
-              rafRef.current = null;
-            }
-            pendingAnswerRef.current = null;
-            elapsed = data.elapsed_seconds;
+          onDone: (response) => {
+            elapsed = response.elapsed_seconds;
             setElapsed(elapsed);
-            const finalAnswer = data.answer || collected;
+            const finalAnswer = response.answer;
+            mode = response.mode || mode;
+            const fullTrace = [...collectedTrace, ...response.pipeline_trace];
+            setSteps(fullTrace);
             setLiveAnswer(finalAnswer);
             setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === "assistant") {
-                next[next.length - 1] = { role: "assistant", content: finalAnswer };
-              }
-              return next;
+              return updateLatestAssistant(prev, (message) => ({
+                ...message,
+                content: finalAnswer,
+                agentActivity: [
+                  ...(message.agentActivity || []),
+                  { kind: "summary", summary: response.exploration },
+                ],
+              }));
             });
             setLastResponse({
               answer: finalAnswer,
@@ -304,18 +347,15 @@ export default function HomePage() {
               routing_reasoning: "",
               blocks: collectedBlocks,
               elapsed_seconds: elapsed,
-              pipeline_trace: collectedTrace,
+              pipeline_trace: fullTrace,
             });
           },
           onError: (detail) => {
             setMessages((prev) => {
-              const next = [...prev];
-              next[next.length - 1] = {
-                role: "assistant",
-                content:
-                  "Sorry, an error occurred while processing your query: " + detail,
-              };
-              return next;
+              return updateLatestAssistant(prev, (message) => ({
+                ...message,
+                content: "Agent 执行失败：" + detail,
+              }));
             });
           },
         },
@@ -325,23 +365,14 @@ export default function HomePage() {
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
+          return updateLatestAssistant(prev, (message) => ({
+            ...message,
             content:
-              "Sorry, an error occurred while processing your query. Please make sure the backend API is running.",
-          };
-          return next;
+              "Agent 执行失败，请确认后端 API、DeepSeek 和机构网站均可访问。",
+          }));
         });
       }
     } finally {
-      // Stop any buffered token frame from landing after the stream ends
-      // (error / abort / normal completion all funnel through here).
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      pendingAnswerRef.current = null;
       endStream();
       abortRef.current = null;
     }

@@ -5,10 +5,13 @@ import { motion } from "framer-motion";
 import { Check, Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import AgentExplorationTrace from "@/components/AgentExplorationTrace";
+import type { AgentActivity } from "@/lib/api";
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  agentActivity?: AgentActivity[];
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -129,6 +132,12 @@ export default function ChatPanel({
                   : "max-w-[80%] px-4 py-3 rounded-2xl rounded-br-md bg-primary text-text-inverse text-sm"
               }
             >
+              {isAssistant && (
+                <AgentExplorationTrace
+                  activities={msg.agentActivity || []}
+                  isActive={isStreaming && isLast}
+                />
+              )}
               {isAssistant ? renderContent(msg.content, i) : msg.content}
               {showCopy && (
                 <div className="mt-2 flex justify-end">

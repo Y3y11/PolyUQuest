@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Durable graph mutation from the Agent API is opt-in even when a request
+    # sets persist_discoveries=true.
+    agent_allow_persistence: bool = False
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -141,3 +144,12 @@ crawl_config = _load_yaml("crawl.yaml")
 llm_config = _load_yaml("llm.yaml")
 aliases_config = _load_yaml("aliases.yaml")
 thresholds_config = _load_yaml("thresholds.yaml")
+agent_config = _load_yaml("agent.yaml")
+
+
+def stage_model(stage: str) -> str | None:
+    """Resolve a stage model, allowing deployment-specific env overrides."""
+    override = os.getenv(f"{stage.upper()}_MODEL", "").strip()
+    if override:
+        return override
+    return (llm_config.get(stage, {}) or {}).get("model")

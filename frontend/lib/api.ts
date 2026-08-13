@@ -33,6 +33,62 @@ export interface QueryResponse {
   pipeline_trace: PipelineStep[];
 }
 
+export interface AgentAction {
+  sequence: number;
+  action: string;
+  status: "started" | "succeeded" | "failed" | "skipped";
+  duration_ms: number;
+  details: Record<string, unknown>;
+}
+
+export interface AgentAssessment {
+  decision: "answer" | "expand" | "refresh" | "abstain";
+  confidence: number;
+  reasons: string[];
+  supported_claims: string[];
+  missing_claims: string[];
+}
+
+export interface AgentExplorationSummary {
+  iterations: number;
+  pages_fetched: number;
+  fetch_failures: number;
+  frontier_candidates_seen: number;
+  temporary_evidence_blocks: number;
+  patches_published: number;
+  stop_reason: string;
+}
+
+interface AgentEvidenceBlock {
+  block_id: string;
+  content: string;
+  heading_context: string;
+  source_url: string;
+  source_title: string;
+  scores?: {
+    retrieval?: number;
+    reranker?: number | null;
+    bm25?: number | null;
+  };
+}
+
+export interface AgentQueryResponse {
+  run_id: string;
+  answer: string;
+  response_status: "answered" | "partial" | "abstained" | "error";
+  mode: string;
+  evidence: AgentEvidenceBlock[];
+  actions: AgentAction[];
+  exploration: AgentExplorationSummary;
+  pipeline_trace: PipelineStep[];
+  elapsed_seconds: number;
+}
+
+export type AgentActivity =
+  | { kind: "action"; action: AgentAction }
+  | { kind: "assessment"; assessment: AgentAssessment }
+  | { kind: "summary"; summary: AgentExplorationSummary };
+
 export interface GraphStats {
   webpages: number;
   blocks: number;
@@ -154,6 +210,22 @@ export interface StreamCallbacks {
   onError?: (detail: string) => void;
 }
 
+export interface AgentStreamCallbacks {
+  onRunStarted?: (data: { run_id: string; query: string }) => void;
+  onRouting?: (data: {
+    mode: string;
+    alt_mode: string | null;
+    reasoning: string;
+    confidence: number;
+    source: string;
+  }) => void;
+  onAction?: (action: AgentAction) => void;
+  onEvidence?: (blocks: BlockRef[]) => void;
+  onAssessment?: (assessment: AgentAssessment) => void;
+  onDone?: (response: AgentQueryResponse) => void;
+  onError?: (detail: string) => void;
+}
+
 interface ParsedEvent {
   event: string;
   data: string;
@@ -257,6 +329,125 @@ export async function queryStreamAPI(
   if (pending.trim()) {
     for (const ev of parseSSE(pending)) {
       dispatch(ev.event, ev.data);
+    }
+  }
+}
+
+function toBlockRef(block: AgentEvidenceBlock): BlockRef {
+  return {
+    block_id: block.block_id,
+    content: block.content,
+    heading_context: block.heading_context || "",
+    source_url: block.source_url,
+    source_title: block.source_title || "",
+    score:
+      block.scores?.reranker ??
+      block.scores?.retrieval ??
+      block.scores?.bm25 ??
+      0,
+  };
+}
+
+/**
+ * Run the bounded retrieval Agent. Unlike /query/stream, this endpoint may
+ * leave the indexed graph, explore trusted PolyU pages, and report each
+ * auditable decision/action before returning the grounded answer.
+ */
+export async function agentQueryStreamAPI(
+  query: string,
+  callbacks: AgentStreamCallbacks,
+  signal?: AbortSignal,
+  history?: Turn[]
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/agent/query/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({
+      query,
+      mode: "auto",
+      history: history || [],
+      explore_web: true,
+      persist_discoveries: false,
+      freshness: "auto",
+      budget: {
+        max_iterations: 3,
+        max_pages: 5,
+        max_depth: 2,
+        max_seconds: 90,
+      },
+    }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Agent stream API ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+
+  const dispatch = (event: string, raw: string) => {
+    let data: unknown = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = raw;
+    }
+    switch (event) {
+      case "run_started":
+        callbacks.onRunStarted?.(data as { run_id: string; query: string });
+        break;
+      case "action":
+        callbacks.onAction?.(data as AgentAction);
+        break;
+      case "routing":
+        callbacks.onRouting?.(
+          data as {
+            mode: string;
+            alt_mode: string | null;
+            reasoning: string;
+            confidence: number;
+            source: string;
+          }
+        );
+        break;
+      case "evidence": {
+        const blocks = ((data as { blocks?: AgentEvidenceBlock[] })?.blocks || []).map(
+          toBlockRef
+        );
+        callbacks.onEvidence?.(blocks);
+        break;
+      }
+      case "assessment":
+        callbacks.onAssessment?.(data as AgentAssessment);
+        break;
+      case "done":
+        callbacks.onDone?.(data as AgentQueryResponse);
+        break;
+      case "error":
+        callbacks.onError?.(
+          (data as { detail?: string })?.detail || "Agent stream error"
+        );
+        break;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    const splitAt = pending.lastIndexOf("\n\n");
+    if (splitAt === -1) continue;
+    const consumable = pending.slice(0, splitAt + 2);
+    pending = pending.slice(splitAt + 2);
+    for (const event of parseSSE(consumable)) {
+      dispatch(event.event, event.data);
+    }
+  }
+  if (pending.trim()) {
+    for (const event of parseSSE(pending)) {
+      dispatch(event.event, event.data);
     }
   }
 }

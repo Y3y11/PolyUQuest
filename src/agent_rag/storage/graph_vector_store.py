@@ -140,6 +140,12 @@ class GraphVectorStore:
                     "page_type": p.get("page_type", "other"),
                     "department": p.get("department", ""),
                     "title": p.get("title", ""),
+                    "fetched_at": p.get("fetched_at", ""),
+                    "content_hash": p.get("content_hash", ""),
+                    "source_type": p.get("source_type", "batch_crawl"),
+                    "agent_run_id": p.get("agent_run_id", ""),
+                    "patch_id": p.get("patch_id", ""),
+                    "patch_status": p.get("patch_status", ""),
                     "last_seen_build_id": build_id,
                 }
                 for p in keep_pages
@@ -182,6 +188,12 @@ class GraphVectorStore:
                     "heading_context": b.get("heading_context", ""),
                     "token_count": b.get("token_count", 0),
                     "content": b.get("content", ""),
+                    "fetched_at": b.get("fetched_at", ""),
+                    "content_hash": b.get("content_hash", ""),
+                    "source_type": b.get("source_type", "batch_crawl"),
+                    "agent_run_id": b.get("agent_run_id", ""),
+                    "patch_id": b.get("patch_id", ""),
+                    "patch_status": b.get("patch_status", ""),
                     "last_seen_build_id": build_id,
                 }
                 for b in blocks

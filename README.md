@@ -104,8 +104,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
 | API keys / DB password / CORS | `.env` (template in `.env.example`) |
 | Per-stage LLM model + temperature | `configs/llm.yaml` |
 | Router confidence cutoffs, retrieval thresholds | `configs/thresholds.yaml` |
+| Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
 | Entity alias dictionary | `configs/aliases.yaml` |
-| Crawler seeds / URL filter | `configs/crawl.yaml` |
+| Connector site identity / seed labels / URL policy | `configs/crawl.yaml` |
 
 **LLM provider** defaults to `siliconflow`; `deepseek` and `qwen` also work by
 setting `LLM_PROVIDER` in `.env`. **Embeddings** default to BGE-M3 (1024-d) via
@@ -120,10 +121,25 @@ Once the backend is running, the main routes (all under `/api`) are:
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/query` | Ask a question; returns answer + retrieval trace |
+| `POST` | `/api/query/stream` | Ask a question with SSE answer streaming |
+| `POST` | `/api/agent/query` | Bounded search/expand/fetch Agent with evidence trace |
+| `POST` | `/api/agent/query/stream` | Agent actions and final response over SSE |
 | `GET`  | `/api/graph/stats` | Knowledge-graph node counts |
 | `GET`  | `/api/health` | Liveness check |
 
 Full interactive documentation is at `http://localhost:8000/docs`.
+
+The Agent endpoint preserves the original retrieval API. Web exploration is
+restricted to the crawler domain allowlist and does not update the durable graph
+unless `persist_discoveries=true`. See
+[`docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`](docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md)
+for contracts, budgets, verification, and current MVP limitations.
+
+Agent query analysis uses an open-domain `entity + qualifier + intent +
+required_claim` contract. Institution names and seed labels live in connector
+configuration; the core planner/evaluator does not contain PolyU department or
+degree rules, so the same constraint checks can be reused for product versions,
+policies, services, and other intranet entities.
 
 ---
 

@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from agent_rag.api.schemas import BlockRef, PipelineStep, QueryRequest, QueryResponse
-from agent_rag.config import llm_config, thresholds_config
+from agent_rag.config import llm_config, stage_model, thresholds_config
 from agent_rag.llm.client import AsyncLLMClient, LLMClient
 from agent_rag.retrieval._contextualize import contextualize_query
 from agent_rag.retrieval._embedding import embed_query
@@ -52,7 +52,7 @@ _MODE_TO_FN = {
 
 ALL_HYBRID_MODES = ["mode_a", "mode_b", "mode_c"]
 
-_GENERATION_MODEL = (llm_config.get("generation", {}) or {}).get("model")
+_GENERATION_MODEL = stage_model("generation")
 _GENERATION_MAX_TOKENS = int((llm_config.get("generation", {}) or {}).get("max_tokens", 2048))
 
 

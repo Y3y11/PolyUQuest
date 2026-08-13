@@ -57,7 +57,8 @@ def get_cached(block_id: str, p_hash: str) -> str | None:
 def set_cached(block_id: str, p_hash: str, response: str):
     conn = _get_conn()
     conn.execute(
-        "INSERT OR REPLACE INTO llm_cache (block_id, prompt_hash, response, created_at) VALUES (?,?,?,?)",
+        "INSERT OR REPLACE INTO llm_cache "
+        "(block_id, prompt_hash, response, created_at) VALUES (?,?,?,?)",
         (block_id, p_hash, response, time.time()),
     )
     conn.commit()
@@ -83,6 +84,7 @@ def _serialize_chat_params(params: dict[str, Any]) -> str:
         "temperature": params.get("temperature"),
         "response_format": params.get("response_format"),
         "max_tokens": params.get("max_tokens"),
+        "extra_body": params.get("extra_body"),
     }
     return json.dumps(keep, sort_keys=True, ensure_ascii=False)
 

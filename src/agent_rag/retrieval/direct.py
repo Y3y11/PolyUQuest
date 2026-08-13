@@ -9,7 +9,7 @@ from typing import Any
 import structlog
 from jinja2 import Template
 
-from agent_rag.config import llm_config, thresholds_config
+from agent_rag.config import llm_config, stage_model, thresholds_config
 from agent_rag.llm.client import LLMClient, cost_stage
 from agent_rag.retrieval import _bm25, _rewriter
 from agent_rag.retrieval._context import collect_related_links
@@ -37,7 +37,7 @@ _BM25_TOP_K = int(thresholds_config.get("retrieval", {}).get("bm25_top_k", 20))
 
 logger = structlog.get_logger(__name__)
 
-_GENERATION_MODEL = (llm_config.get("generation", {}) or {}).get("model")
+_GENERATION_MODEL = stage_model("generation")
 _GENERATION_MAX_TOKENS = int((llm_config.get("generation", {}) or {}).get("max_tokens", 2048))
 
 _ANSWER_TMPL = Template(

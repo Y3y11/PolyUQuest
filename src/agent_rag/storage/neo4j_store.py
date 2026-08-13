@@ -84,6 +84,12 @@ class Neo4jStore:
             w.department = p.department,
             w.page_type = p.page_type,
             w.last_crawled = p.crawled_at,
+            w.fetched_at = p.fetched_at,
+            w.content_hash = p.content_hash,
+            w.source_type = p.source_type,
+            w.agent_run_id = p.agent_run_id,
+            w.patch_id = p.patch_id,
+            w.patch_status = p.patch_status,
             w.last_seen_build_id = $build_id
         """
         rows = [
@@ -94,6 +100,12 @@ class Neo4jStore:
                 "department": p.get("department", ""),
                 "page_type": p.get("page_type", "other"),
                 "crawled_at": p.get("crawled_at", ""),
+                "fetched_at": p.get("fetched_at", ""),
+                "content_hash": p.get("content_hash", ""),
+                "source_type": p.get("source_type", "batch_crawl"),
+                "agent_run_id": p.get("agent_run_id", ""),
+                "patch_id": p.get("patch_id", ""),
+                "patch_status": p.get("patch_status", ""),
             }
             for p in pages
         ]
@@ -127,12 +139,15 @@ class Neo4jStore:
         # Stub WebPages for unknown link targets get build_id so they aren't
         # immediately classified as orphans by the next cleanup pass.
         stub_query = """
-        UNWIND $urls AS u
-        MERGE (w:WebPage {url: u})
+        UNWIND $rows AS u
+        MERGE (w:WebPage {url: u.url})
         ON CREATE SET w.title = '', w.meta_description = '',
                       w.department = '', w.page_type = 'other',
                       w.last_crawled = '',
-                      w.created_build_id = $build_id
+                      w.created_build_id = $build_id,
+                      w.source_type = u.source_type,
+                      w.agent_run_id = u.agent_run_id,
+                      w.patch_id = u.patch_id
         SET w.last_seen_build_id = $build_id
         """
         edge_query = """
@@ -142,14 +157,41 @@ class Neo4jStore:
         MERGE (a)-[r:LINKS_TO {link_type: l.link_type}]->(b)
         ON CREATE SET r.created_build_id = $build_id
         SET r.anchor_text = l.anchor_text,
+            r.source_type = l.source_type,
+            r.agent_run_id = l.agent_run_id,
+            r.patch_id = l.patch_id,
             r.last_seen_build_id = $build_id
         """
-        urls = list({l["to_url"] for l in links if l.get("to_url")})
+        target_rows: dict[str, dict[str, str]] = {}
+        for link in links:
+            to_url = link.get("to_url")
+            if not to_url:
+                continue
+            target_rows[to_url] = {
+                "url": to_url,
+                "source_type": link.get("source_type", "batch_crawl"),
+                "agent_run_id": link.get("agent_run_id", ""),
+                "patch_id": link.get("patch_id", ""),
+            }
+        targets = list(target_rows.values())
         with self._driver.session() as session:
-            for i in range(0, len(urls), batch_size):
-                session.run(stub_query, urls=urls[i : i + batch_size], build_id=build_id)
-            for i in range(0, len(links), batch_size):
-                session.run(edge_query, rows=links[i : i + batch_size], build_id=build_id)
+            for i in range(0, len(targets), batch_size):
+                session.run(
+                    stub_query,
+                    rows=targets[i : i + batch_size],
+                    build_id=build_id,
+                )
+            rows = [
+                {
+                    **link,
+                    "source_type": link.get("source_type", "batch_crawl"),
+                    "agent_run_id": link.get("agent_run_id", ""),
+                    "patch_id": link.get("patch_id", ""),
+                }
+                for link in links
+            ]
+            for i in range(0, len(rows), batch_size):
+                session.run(edge_query, rows=rows[i : i + batch_size], build_id=build_id)
 
     # ── Block CRUD ────────────────────────────────────────────────
 
@@ -213,6 +255,12 @@ class Neo4jStore:
             n.token_count = b.token_count,
             n.url = b.url,
             n.depth = b.depth,
+            n.fetched_at = b.fetched_at,
+            n.content_hash = b.content_hash,
+            n.source_type = b.source_type,
+            n.agent_run_id = b.agent_run_id,
+            n.patch_id = b.patch_id,
+            n.patch_status = b.patch_status,
             n.last_seen_build_id = $build_id
         WITH n, b
         MATCH (w:WebPage {url: b.url})
@@ -235,6 +283,12 @@ class Neo4jStore:
                 "token_count": b.get("token_count", 0),
                 "url": b.get("url", ""),
                 "depth": b.get("depth", 0),
+                "fetched_at": b.get("fetched_at", ""),
+                "content_hash": b.get("content_hash", ""),
+                "source_type": b.get("source_type", "batch_crawl"),
+                "agent_run_id": b.get("agent_run_id", ""),
+                "patch_id": b.get("patch_id", ""),
+                "patch_status": b.get("patch_status", ""),
             }
             for b in blocks
         ]
@@ -620,6 +674,7 @@ class Neo4jStore:
                     f"MATCH (n:{label}) "
                     f"WHERE n.last_seen_build_id IS NOT NULL "
                     f"  AND n.last_seen_build_id <> $cur "
+                    f"  AND coalesce(n.source_type, '') <> 'agent_fetch' "
                     f"RETURN n.{key} AS id LIMIT $lim"
                 )
                 out[label] = [r["id"] for r in session.run(q, cur=current_build_id, lim=limit)]
@@ -628,6 +683,7 @@ class Neo4jStore:
                     f"MATCH ()-[r:{rel_type}]->() "
                     f"WHERE r.last_seen_build_id IS NOT NULL "
                     f"  AND r.last_seen_build_id <> $cur "
+                    f"  AND coalesce(r.source_type, '') <> 'agent_fetch' "
                     f"RETURN count(r) AS c"
                 )
                 rec = session.run(q, cur=current_build_id).single()
@@ -644,24 +700,30 @@ class Neo4jStore:
             ("RELATES_TO",
              "MATCH ()-[r:RELATES_TO]->() "
              "WHERE r.last_seen_build_id IS NOT NULL AND r.last_seen_build_id <> $cur "
+             "AND coalesce(r.source_type, '') <> 'agent_fetch' "
              "DELETE r RETURN count(r) AS c"),
             ("LINKS_TO",
              "MATCH ()-[r:LINKS_TO]->() "
              "WHERE r.last_seen_build_id IS NOT NULL AND r.last_seen_build_id <> $cur "
+             "AND coalesce(r.source_type, '') <> 'agent_fetch' "
              "DELETE r RETURN count(r) AS c"),
         ]
         node_queries = [
             ("Block",
              "MATCH (n:Block) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
+             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
              "DETACH DELETE n RETURN count(n) AS c"),
             ("Entity",
              "MATCH (n:Entity) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
+             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
              "DETACH DELETE n RETURN count(n) AS c"),
             ("TopicKeyword",
              "MATCH (n:TopicKeyword) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
+             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
              "DETACH DELETE n RETURN count(n) AS c"),
             ("WebPage",
              "MATCH (n:WebPage) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
+             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
              "DETACH DELETE n RETURN count(n) AS c"),
         ]
         with self._driver.session() as session:
