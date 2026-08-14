@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import uuid
 from contextlib import AsyncExitStack
 
 import structlog
@@ -12,6 +14,7 @@ from agent_rag.config import settings
 from agent_rag.freshness.worker import freshness_worker_lifespan
 from agent_rag.indexing.worker import index_worker_lifespan
 from agent_rag.workers.bootstrap import bootstrap_background_state
+from agent_rag.workers.status import worker_status_store
 
 logger = structlog.get_logger(__name__)
 
@@ -39,6 +42,9 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
     if stop_event is None:
         _install_signal_handlers(event)
 
+    from agent_rag.runtime import prepare_process_runtime
+
+    await asyncio.to_thread(prepare_process_runtime)
     await bootstrap_background_state()
     async with AsyncExitStack() as stack:
         index_worker = await stack.enter_async_context(index_worker_lifespan())
@@ -48,12 +54,74 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
                 "standalone worker has no enabled loops; enable INDEX_WORKER_ENABLED "
                 "or FRESHNESS_WORKER_ENABLED"
             )
+        instance_id = f"worker-{uuid.uuid4().hex[:12]}"
+        capabilities = [
+            name
+            for name, enabled in (
+                ("index", index_worker is not None),
+                ("freshness", freshness_worker is not None),
+            )
+            if enabled
+        ]
+        status_registered = False
+        try:
+            worker_status_store.register(
+                instance_id,
+                pid=os.getpid(),
+                capabilities=capabilities,
+            )
+            status_registered = True
+        except Exception as exc:
+            logger.warning(
+                "worker_status_register_failed",
+                instance_id=instance_id,
+                error_type=type(exc).__name__,
+            )
         logger.info(
             "worker_process_ready",
+            instance_id=instance_id,
             index_worker=index_worker is not None,
             freshness_worker=freshness_worker is not None,
         )
-        await event.wait()
+
+        async def heartbeat_loop() -> None:
+            while not event.is_set():
+                try:
+                    await asyncio.wait_for(
+                        event.wait(), timeout=settings.worker_heartbeat_seconds
+                    )
+                except TimeoutError:
+                    try:
+                        await asyncio.to_thread(
+                            worker_status_store.heartbeat, instance_id
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "worker_heartbeat_failed",
+                            instance_id=instance_id,
+                            error_type=type(exc).__name__,
+                        )
+
+        heartbeat_task = (
+            asyncio.create_task(heartbeat_loop(), name="worker-heartbeat")
+            if status_registered
+            else None
+        )
+        try:
+            await event.wait()
+        finally:
+            event.set()
+            if heartbeat_task is not None:
+                await heartbeat_task
+            if status_registered:
+                try:
+                    await asyncio.to_thread(worker_status_store.stop, instance_id)
+                except Exception as exc:
+                    logger.warning(
+                        "worker_status_stop_failed",
+                        instance_id=instance_id,
+                        error_type=type(exc).__name__,
+                    )
 
 
 def start() -> None:

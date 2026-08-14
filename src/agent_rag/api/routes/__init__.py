@@ -6,6 +6,7 @@ from agent_rag.api.routes import (
     indexing_router,
     query_router,
     telemetry_router,
+    worker_router,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "indexing_router",
     "query_router",
     "telemetry_router",
+    "worker_router",
 ]

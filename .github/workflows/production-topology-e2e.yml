@@ -1,0 +1,152 @@
+name: Production Topology E2E Gate
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/production-topology-e2e.yml"
+      - "compose.topology-e2e.yml"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "configs/**"
+      - "src/agent_rag/agent/**"
+      - "src/agent_rag/api/**"
+      - "src/agent_rag/e2e/**"
+      - "src/agent_rag/freshness/**"
+      - "src/agent_rag/indexing/**"
+      - "src/agent_rag/knowledge/**"
+      - "src/agent_rag/quality/**"
+      - "src/agent_rag/security/**"
+      - "src/agent_rag/storage/**"
+      - "src/agent_rag/telemetry/**"
+      - "src/agent_rag/tools/**"
+      - "src/agent_rag/versioning/**"
+      - "src/agent_rag/workers/**"
+      - "src/agent_rag/config.py"
+      - "src/agent_rag/runtime.py"
+      - "tests/test_topology_e2e_contract.py"
+      - "tests/test_worker_status.py"
+  pull_request:
+    paths:
+      - ".github/workflows/production-topology-e2e.yml"
+      - "compose.topology-e2e.yml"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "configs/**"
+      - "src/agent_rag/agent/**"
+      - "src/agent_rag/api/**"
+      - "src/agent_rag/e2e/**"
+      - "src/agent_rag/freshness/**"
+      - "src/agent_rag/indexing/**"
+      - "src/agent_rag/knowledge/**"
+      - "src/agent_rag/quality/**"
+      - "src/agent_rag/security/**"
+      - "src/agent_rag/storage/**"
+      - "src/agent_rag/telemetry/**"
+      - "src/agent_rag/tools/**"
+      - "src/agent_rag/versioning/**"
+      - "src/agent_rag/workers/**"
+      - "src/agent_rag/config.py"
+      - "src/agent_rag/runtime.py"
+      - "tests/test_topology_e2e_contract.py"
+      - "tests/test_worker_status.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-topology-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-worker-takeover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: src
+      UV_CACHE_DIR: .uv-cache
+      TOPOLOGY_E2E_TOKEN: topology-${{ github.run_id }}-${{ github.run_attempt }}
+      TOPOLOGY_E2E_PROJECT: polyuquest-topology-${{ github.run_id }}-${{ github.run_attempt }}
+      TOPOLOGY_API_PORT: "18000"
+      TOPOLOGY_FIXTURE_PORT: "18080"
+      TOPOLOGY_API_AUTH_KEYS: >-
+        config-reader:reader:95557bb8d6c3a6bd9625df1c39520308e7fdd8fc5f552ff1e23448ba9f25c94a,
+        config-admin:admin:b57bf4a1724d3aade2555a77094f673bd13eb9f10347c84c7946ad5f05b1b7b7
+      TOPOLOGY_E2E_OUTPUT: data/runtime/topology-e2e/report.json
+      TOPOLOGY_E2E_LOGS: data/runtime/topology-e2e/compose.log
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked project dependencies
+        run: uv sync --locked --group dev
+
+      - name: Validate topology contracts
+        run: >-
+          uv run --no-sync pytest
+          tests/test_topology_e2e_contract.py
+          tests/test_worker_status.py -q
+
+      - name: Lint topology implementation
+        run: >-
+          uv run --no-sync ruff check
+          src/agent_rag/runtime.py
+          src/agent_rag/e2e/topology_runtime.py
+          src/agent_rag/e2e/fixture_app.py
+          src/agent_rag/e2e/topology_driver.py
+          src/agent_rag/workers/status.py
+          src/agent_rag/api/routes/worker_router.py
+          tests/test_topology_e2e_contract.py
+          tests/test_worker_status.py
+
+      - name: Validate deployment and supply-chain policy
+        run: |
+          uv run --no-sync python scripts/validate_deployment.py
+          uv run --no-sync python scripts/validate_supply_chain.py validate
+          docker compose -f compose.topology-e2e.yml config --quiet
+
+      - name: Execute production topology scenario
+        run: >-
+          uv run --no-sync agent-rag-topology-e2e
+          --project "$TOPOLOGY_E2E_PROJECT"
+          --token "$TOPOLOGY_E2E_TOKEN"
+          --output "$TOPOLOGY_E2E_OUTPUT"
+          --logs "$TOPOLOGY_E2E_LOGS"
+
+      - name: Collect final Compose logs
+        if: always()
+        run: |
+          mkdir -p data/runtime/topology-e2e
+          docker compose -f compose.topology-e2e.yml -p "$TOPOLOGY_E2E_PROJECT" logs --no-color > "$TOPOLOGY_E2E_LOGS" 2>&1 || true
+
+      - name: Remove isolated topology project
+        if: always()
+        run: >-
+          docker compose -f compose.topology-e2e.yml
+          -p "$TOPOLOGY_E2E_PROJECT"
+          down -v --remove-orphans
+
+      - name: Upload topology E2E evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-topology-e2e-${{ github.sha }}
+          path: |
+            data/runtime/topology-e2e/report.json
+            data/runtime/topology-e2e/compose.log
+          if-no-files-found: error
+          retention-days: 14

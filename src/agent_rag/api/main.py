@@ -20,6 +20,7 @@ from agent_rag.api.routes import (
     query_router,
     security_router,
     telemetry_router,
+    worker_router,
 )
 from agent_rag.config import settings
 from agent_rag.retrieval import _bm25, _embedding
@@ -38,6 +39,9 @@ async def _lifespan(app: FastAPI):
     app.state.bm25_ready = False
     app.state.index_worker = None
     app.state.freshness_worker = None
+    from agent_rag.runtime import prepare_process_runtime
+
+    await asyncio.to_thread(prepare_process_runtime)
     try:
         cutoff = datetime.now(UTC) - timedelta(
             days=settings.security_audit_retention_days
@@ -119,6 +123,7 @@ app.include_router(indexing_router.router, prefix="/api", tags=["indexing"])
 app.include_router(freshness_router.router, prefix="/api", tags=["freshness"])
 app.include_router(telemetry_router.router, prefix="/api", tags=["telemetry"])
 app.include_router(security_router.router, prefix="/api", tags=["security"])
+app.include_router(worker_router.router, prefix="/api", tags=["workers"])
 
 
 def start():

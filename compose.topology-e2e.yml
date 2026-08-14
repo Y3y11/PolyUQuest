@@ -1,0 +1,168 @@
+x-runtime-environment: &runtime-environment
+  APP_ENVIRONMENT: test
+  APP_RUNTIME_PROFILE: remote
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: topology_e2e_password
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: "6333"
+  EMBEDDING_PROVIDER: siliconflow
+  EMBEDDING_DIM: "64"
+  LLM_PROVIDER: siliconflow
+  RERANKER_MODE: first_stage_only
+  AGENT_ALLOW_PERSISTENCE: "true"
+  AGENT_ASYNC_INDEXING: "true"
+  AGENT_LEDGER_PATH: /app/data/runtime/topology.sqlite3
+  SECURITY_AUDIT_PATH: /app/data/runtime/security.sqlite3
+  BUSINESS_E2E_MODE: topology
+  BUSINESS_E2E_TOKEN: ${TOPOLOGY_E2E_TOKEN:?set TOPOLOGY_E2E_TOKEN}
+  BUSINESS_E2E_FIXTURE_ORIGIN: http://fixture:8080
+  BUSINESS_E2E_CLAIM_MARKER: /app/data/runtime/topology-claim-delay.done
+  WORKER_HEARTBEAT_SECONDS: "0.5"
+  WORKER_HEARTBEAT_MAX_AGE_SECONDS: "2.0"
+  CORS_ALLOW_ORIGINS: http://127.0.0.1:${TOPOLOGY_API_PORT:-18000}
+  CORS_ALLOW_CREDENTIALS: "true"
+
+x-app-service: &app-service
+  image: ${TOPOLOGY_BACKEND_IMAGE:-polyuquest-topology-e2e:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      APP_RUNTIME_PROFILE: remote
+  init: true
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: "no"
+  networks:
+    - backend
+    - fixture_net
+
+services:
+  api:
+    <<: *app-service
+    command: ["agent-rag-serve"]
+    environment:
+      <<: *runtime-environment
+      APP_PROCESS_ROLE: api
+      API_AUTH_MODE: api_key
+      API_AUTH_KEYS: ${TOPOLOGY_API_AUTH_KEYS:?set hash-only TOPOLOGY_API_AUTH_KEYS}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      API_RELOAD: "false"
+      AGENT_REPAIR_ON_STARTUP: "false"
+      INDEX_WORKER_ENABLED: "false"
+      FRESHNESS_WORKER_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${TOPOLOGY_API_PORT:-18000}:8000"
+    volumes:
+      - topology_runtime:/app/data/runtime
+      - topology_cache:/app/data/cache
+    depends_on:
+      - neo4j
+      - qdrant
+      - fixture
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)
+      interval: 2s
+      timeout: 5s
+      start_period: 20s
+      retries: 60
+
+  worker:
+    <<: *app-service
+    command: ["agent-rag-worker"]
+    environment:
+      <<: *runtime-environment
+      APP_PROCESS_ROLE: worker
+      API_AUTH_MODE: disabled
+      AGENT_REPAIR_ON_STARTUP: "true"
+      INDEX_WORKER_ENABLED: "true"
+      FRESHNESS_WORKER_ENABLED: "true"
+      INDEX_WORKER_POLL_SECONDS: "0.1"
+      INDEX_WORKER_LEASE_SECONDS: "2"
+      INDEX_JOB_RETRY_BASE_SECONDS: "0"
+      INDEX_JOB_RETRY_MAX_SECONDS: "0"
+      FRESHNESS_WORKER_POLL_SECONDS: "0.2"
+      FRESHNESS_WORKER_LEASE_SECONDS: "2"
+      WORKER_SHUTDOWN_GRACE_SECONDS: "5"
+      BUSINESS_E2E_CLAIM_DELAY_SECONDS: "20"
+    volumes:
+      - topology_runtime:/app/data/runtime
+      - topology_cache:/app/data/cache
+    depends_on:
+      - neo4j
+      - qdrant
+      - fixture
+    healthcheck:
+      test: ["CMD", "agent-rag-worker-health", "--max-age-seconds", "2"]
+      interval: 1s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
+
+  fixture:
+    <<: *app-service
+    command: ["agent-rag-e2e-fixture"]
+    environment:
+      <<: *runtime-environment
+      APP_PROCESS_ROLE: api
+      API_AUTH_MODE: disabled
+      INDEX_WORKER_ENABLED: "false"
+      FRESHNESS_WORKER_ENABLED: "false"
+      FIXTURE_PORT: "8080"
+    ports:
+      - "127.0.0.1:${TOPOLOGY_FIXTURE_PORT:-18080}:8080"
+    volumes: []
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8080/__control/health', timeout=3)
+      interval: 1s
+      timeout: 3s
+      start_period: 5s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26.28
+    environment:
+      NEO4J_AUTH: neo4j/topology_e2e_password
+    tmpfs:
+      - /data:size=512m
+      - /logs:size=64m
+    restart: "no"
+    networks:
+      - backend
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    tmpfs:
+      - /qdrant/storage:size=512m
+    restart: "no"
+    networks:
+      - backend
+
+networks:
+  backend:
+    internal: true
+  fixture_net:
+
+volumes:
+  topology_runtime:
+  topology_cache:

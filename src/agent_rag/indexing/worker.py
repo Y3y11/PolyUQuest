@@ -25,7 +25,7 @@ class IndexWorker:
     def __init__(
         self,
         outbox: IndexOutbox = index_outbox,
-        publish_factory: Callable[[], PublishPatchTool] = PublishPatchTool,
+        publish_factory: Callable[[], PublishPatchTool] | None = None,
         *,
         worker_id: str | None = None,
         poll_seconds: float | None = None,
@@ -35,6 +35,10 @@ class IndexWorker:
         telemetry: TelemetryRecorder = telemetry_recorder,
     ):
         self.outbox = outbox
+        if publish_factory is None:
+            from agent_rag.runtime import build_publish_patch_tool
+
+            publish_factory = build_publish_patch_tool
         self.publish_factory = publish_factory
         self.worker_id = worker_id or f"worker-{uuid.uuid4().hex[:12]}"
         self.poll_seconds = (

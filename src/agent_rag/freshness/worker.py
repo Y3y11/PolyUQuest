@@ -260,7 +260,9 @@ async def freshness_worker_lifespan():
     if not settings.freshness_worker_enabled:
         yield None
         return
-    worker = FreshnessWorker()
+    from agent_rag.runtime import build_freshness_worker
+
+    worker = build_freshness_worker()
     task = asyncio.create_task(worker.run(), name="freshness-worker")
     await asyncio.sleep(0)
     try:

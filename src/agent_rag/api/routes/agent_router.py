@@ -12,9 +12,9 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from agent_rag.agent.orchestrator import QueryDrivenAgent
 from agent_rag.agent.schemas import AgentQueryRequest, AgentQueryResponse
 from agent_rag.config import settings
+from agent_rag.runtime import build_query_agent
 from agent_rag.security.auth import require_role
 from agent_rag.security.models import Role
 
@@ -29,7 +29,7 @@ def _sse_event(event: str, data: Any) -> str:
 @router.post("/agent/query", response_model=AgentQueryResponse)
 async def handle_agent_query(request: AgentQueryRequest) -> AgentQueryResponse:
     _enforce_persistence_gate(request)
-    return await QueryDrivenAgent().run(request)
+    return await build_query_agent().run(request)
 
 
 def _enforce_persistence_gate(request: AgentQueryRequest) -> None:
@@ -51,7 +51,7 @@ async def _stream_agent_query(request: AgentQueryRequest) -> AsyncIterator[str]:
 
     async def execute() -> None:
         try:
-            await QueryDrivenAgent().run(request, emit=emit)
+            await build_query_agent().run(request, emit=emit)
         except Exception as exc:  # final safety net for stream clients
             logger.exception("agent_stream_failed", error=str(exc))
             await queue.put(("error", {"detail": str(exc)}))

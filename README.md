@@ -298,6 +298,30 @@ Local ports differ from the defaults; follow
 required environment. The product contract and failure evidence schema are in
 [`docs/BUSINESS_E2E_GATE_PRD.md`](docs/BUSINESS_E2E_GATE_PRD.md).
 
+### Production-topology end-to-end gate
+
+The business gate proves the real storage state machine inside one scenario
+process. The production-topology gate adds the deployment boundaries: a real
+FastAPI container accepts an authenticated SSE query and writes a SQLite
+Outbox job; a separate Worker container claims it, publishes to Neo4j/Qdrant,
+is killed with SIGKILL, and a new Worker instance reclaims the expired lease.
+The same flow then proves hot-query reuse, freshness publication, fact
+retirement, security audit records, and zero external model calls.
+
+```bash
+TOPOLOGY_E2E_TOKEN=topology-local-001 \
+TOPOLOGY_E2E_PROJECT=polyuquest-topology-local-001 \
+uv run agent-rag-topology-e2e \
+  --project polyuquest-topology-local-001 \
+  --token topology-local-001
+```
+
+The isolated Compose topology, cleanup procedure, heartbeat endpoints, and
+failure diagnosis are documented in
+[`docs/PRODUCTION_TOPOLOGY_E2E_RUNBOOK.md`](docs/PRODUCTION_TOPOLOGY_E2E_RUNBOOK.md).
+The product contract is in
+[`docs/PRODUCTION_TOPOLOGY_E2E_PRD.md`](docs/PRODUCTION_TOPOLOGY_E2E_PRD.md).
+
 Changed pages are published with deterministic DOM Block Diff. Only modified,
 added, or missing-vector blocks are embedded; structurally relocated blocks
 reuse their existing vectors, and unchanged page metadata reuses the page

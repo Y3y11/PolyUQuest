@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     freshness_worker_poll_seconds: float = 5.0
     freshness_worker_lease_seconds: int = 120
     worker_shutdown_grace_seconds: float = 30.0
+    worker_heartbeat_seconds: float = 5.0
+    worker_heartbeat_max_age_seconds: float = 20.0
+
+    # Deterministic, test-only runtime composition for the production-topology
+    # E2E gate. Non-test environments fail fast if this boundary is enabled.
+    business_e2e_mode: Literal["disabled", "topology"] = "disabled"
+    business_e2e_token: str = ""
+    business_e2e_fixture_origin: str = ""
+    business_e2e_claim_delay_seconds: float = 0.0
+    business_e2e_claim_marker: str = "data/runtime/topology-claim-delay.done"
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -166,6 +176,29 @@ class Settings(BaseSettings):
             raise ValueError("FRESHNESS_WORKER_LEASE_SECONDS must be positive")
         if self.worker_shutdown_grace_seconds <= 0:
             raise ValueError("WORKER_SHUTDOWN_GRACE_SECONDS must be positive")
+        if self.worker_heartbeat_seconds <= 0:
+            raise ValueError("WORKER_HEARTBEAT_SECONDS must be positive")
+        if self.worker_heartbeat_max_age_seconds < self.worker_heartbeat_seconds:
+            raise ValueError(
+                "WORKER_HEARTBEAT_MAX_AGE_SECONDS must be greater than or equal "
+                "to WORKER_HEARTBEAT_SECONDS"
+            )
+        if self.business_e2e_claim_delay_seconds < 0:
+            raise ValueError("BUSINESS_E2E_CLAIM_DELAY_SECONDS cannot be negative")
+        if self.business_e2e_mode != "disabled":
+            if self.app_environment != "test":
+                raise ValueError("BUSINESS_E2E_MODE is only allowed in APP_ENVIRONMENT=test")
+            if not re.fullmatch(r"[a-zA-Z0-9._-]{3,80}", self.business_e2e_token):
+                raise ValueError("BUSINESS_E2E_TOKEN has an invalid format")
+            if not re.fullmatch(
+                r"https?://[a-zA-Z0-9._-]+(?::[0-9]{1,5})?",
+                self.business_e2e_fixture_origin,
+            ):
+                raise ValueError("BUSINESS_E2E_FIXTURE_ORIGIN must be an HTTP origin")
+        elif self.business_e2e_claim_delay_seconds:
+            raise ValueError(
+                "BUSINESS_E2E_CLAIM_DELAY_SECONDS requires BUSINESS_E2E_MODE=topology"
+            )
         if self.security_audit_retention_days <= 0:
             raise ValueError("SECURITY_AUDIT_RETENTION_DAYS must be positive")
         if (
