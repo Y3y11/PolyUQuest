@@ -1,0 +1,18 @@
+schema_version: "1.0"
+dataset_id: deterministic-gate-fixture
+version: "1.0.0"
+description: Synthetic fixture that validates gate mechanics; not production business Gold.
+owner: polyuquest-engineering
+domain_scope: [synthetic-ci]
+status: approved
+case_file: cases.jsonl
+case_file_sha256: 49d223e293006e18f2feb1d0a129de01fba57cd82a471a6749dbb9098f6c4105
+created_at: "2026-08-14T00:00:00Z"
+source_snapshot_at: "2026-08-14T00:00:00Z"
+reviewer: deterministic-test-suite
+reviewed_at: "2026-08-14T01:00:00Z"
+minimum_cases: 4
+minimum_semantic_gold_ratio: 0.75
+required_tags:
+  - freshness
+  - abstention

@@ -1,0 +1,4 @@
+{"case_id":"blocker","question":"How to apply?","tags":["admission"],"task_type":"procedure","expected_status":"answered","required_facts":[["apply online"]],"oracle_type":"semantic_gold","criticality":"blocker"}
+{"case_id":"critical","question":"What must not be claimed?","tags":["abstention"],"task_type":"safety","expected_status":"answered","forbidden_claims":["guaranteed admission"],"oracle_type":"semantic_gold","criticality":"critical"}
+{"case_id":"freshness","question":"Find the latest policy","tags":["freshness"],"task_type":"navigation","expected_exploration":"required","max_elapsed_seconds":10,"oracle_type":"behavioral_contract","criticality":"standard"}
+{"case_id":"standard","question":"Which source?","tags":["citation"],"task_type":"fact","required_source_patterns":["example.edu/policy"],"oracle_type":"semantic_gold","criticality":"standard"}

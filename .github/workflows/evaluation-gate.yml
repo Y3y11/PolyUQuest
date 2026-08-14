@@ -1,0 +1,96 @@
+name: Evaluation Release Gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/evaluation-gate.yml"
+      - "configs/release_gate.yaml"
+      - "data/eval/**"
+      - "src/agent_rag/evaluation/**"
+      - "tests/test_evaluation*.py"
+      - "tests/fixtures/evaluation/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluation-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic-release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+      EVAL_OUTPUT: data/runtime/eval-ci
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Validate evaluation governance tests
+        run: >-
+          uv run --no-project --python 3.12
+          --with "pydantic==2.13.2" --with "pyyaml==6.0.3"
+          --with "httpx==0.28.1" --with "pytest==9.0.3"
+          pytest tests/test_evaluation.py tests/test_evaluation_governance.py
+          tests/test_evaluation_gate.py -q
+
+      - name: Lint evaluation gate changes
+        run: >-
+          uv run --no-project --python 3.12 --with "ruff==0.15.11"
+          ruff check src/agent_rag/evaluation tests/test_evaluation.py
+          tests/test_evaluation_governance.py tests/test_evaluation_gate.py
+
+      - name: Validate frozen fixture manifest
+        run: >-
+          uv run --no-project --python 3.12
+          --with "pydantic==2.13.2" --with "pyyaml==6.0.3" --with "httpx==0.28.1"
+          python -m agent_rag.evaluation.cli validate
+          --manifest tests/fixtures/evaluation/manifest.yaml
+          --output "$EVAL_OUTPUT/dataset-validation.json"
+
+      - name: Score baseline fixture
+        run: >-
+          uv run --no-project --python 3.12
+          --with "pydantic==2.13.2" --with "pyyaml==6.0.3" --with "httpx==0.28.1"
+          python -m agent_rag.evaluation.cli score
+          --manifest tests/fixtures/evaluation/manifest.yaml
+          --responses tests/fixtures/evaluation/baseline.responses.jsonl
+          --variant baseline --output "$EVAL_OUTPUT/baseline.json"
+
+      - name: Score candidate fixture
+        run: >-
+          uv run --no-project --python 3.12
+          --with "pydantic==2.13.2" --with "pyyaml==6.0.3" --with "httpx==0.28.1"
+          python -m agent_rag.evaluation.cli score
+          --manifest tests/fixtures/evaluation/manifest.yaml
+          --responses tests/fixtures/evaluation/candidate.responses.jsonl
+          --variant candidate --output "$EVAL_OUTPUT/candidate.json"
+
+      - name: Enforce release gate
+        run: >-
+          uv run --no-project --python 3.12
+          --with "pydantic==2.13.2" --with "pyyaml==6.0.3" --with "httpx==0.28.1"
+          python -m agent_rag.evaluation.cli gate
+          --baseline "$EVAL_OUTPUT/baseline.json"
+          --candidate "$EVAL_OUTPUT/candidate.json"
+          --policy tests/fixtures/evaluation/policy.yaml
+          --output "$EVAL_OUTPUT/gate-decision.json"
+
+      - name: Upload evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deterministic-evaluation-gate
+          path: data/runtime/eval-ci
+          if-no-files-found: error
+          retention-days: 14

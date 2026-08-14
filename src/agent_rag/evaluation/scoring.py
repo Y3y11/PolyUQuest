@@ -11,8 +11,10 @@ from urllib.parse import urlsplit
 from agent_rag.evaluation.models import (
     CaseScore,
     EvaluationCase,
+    EvaluationDatasetManifest,
     EvaluationReport,
     ObservedResponse,
+    SliceSummary,
 )
 
 
@@ -57,6 +59,7 @@ def score_responses(
     observations: list[ObservedResponse],
     *,
     variant: str,
+    manifest: EvaluationDatasetManifest | None = None,
 ) -> EvaluationReport:
     by_id = {item.case_id: item for item in observations}
     unknown = sorted(set(by_id) - {case.case_id for case in cases})
@@ -66,7 +69,16 @@ def score_responses(
     for case in cases:
         observed = by_id.get(case.case_id)
         if observed is None:
-            results.append(CaseScore(case_id=case.case_id, failures=["missing_response"]))
+            results.append(
+                CaseScore(
+                    case_id=case.case_id,
+                    tags=case.tags,
+                    task_type=case.task_type,
+                    oracle_type=str(case.oracle_type),
+                    criticality=case.criticality,
+                    failures=["missing_response"],
+                )
+            )
             continue
         results.append(_score_case(case, observed))
     metric_names = [
@@ -83,7 +95,7 @@ def score_responses(
         "overall",
     ]
     summary: dict[str, float | int | None] = {
-        "missing_responses": sum(not item.run_id for item in results)
+        "missing_responses": sum(case.case_id not in by_id for case in cases)
     }
     for name in metric_names:
         values = [getattr(item, name) for item in results if getattr(item, name) is not None]
@@ -104,7 +116,7 @@ def score_responses(
         round(sum(token_values) / len(token_values), 4) if token_values else None
     )
     config_contract = {
-        "evaluator": "deterministic-v1",
+        "evaluator": "deterministic-v2",
         "metrics": metric_names,
         "normalization": "casefold-whitespace-v1",
     }
@@ -123,7 +135,11 @@ def score_responses(
         ),
         code_versions=sorted({item.code_version for item in observations if item.code_version}),
         cases=len(cases),
+        dataset_id=manifest.dataset_id if manifest else "",
+        dataset_version=manifest.version if manifest else "",
+        dataset_status=manifest.status if manifest else "",
         summary=summary,
+        slices=_build_slices(results),
         results=results,
     )
 
@@ -205,13 +221,16 @@ def _score_case(case: EvaluationCase, observed: ObservedResponse) -> CaseScore:
     quality_values = [
         1 - value if name == "forbidden_claim_rate" else value
         for name, value in metrics.items()
-        if name in {"fact_coverage", "source_recall", "forbidden_claim_rate"} and value is not None
+        if case.oracle_type == "semantic_gold"
+        and name in {"fact_coverage", "source_recall", "forbidden_claim_rate"}
+        and value is not None
     ]
     operational_values = [
         value
         for name, value in metrics.items()
         if name
         in {
+            "status_match",
             "exploration_match",
             "persistence_match",
             "latency_budget_match",
@@ -223,6 +242,20 @@ def _score_case(case: EvaluationCase, observed: ObservedResponse) -> CaseScore:
     operational_score = (
         sum(operational_values) / len(operational_values) if operational_values else None
     )
+    if case.oracle_type == "smoke":
+        operational_score = None
+    failure_labels = {
+        "status_match": "unexpected_response_status",
+        "exploration_match": "exploration_contract_mismatch",
+        "persistence_match": "persistence_contract_mismatch",
+        "latency_budget_match": "latency_budget_exceeded",
+        "page_budget_match": "page_budget_exceeded",
+    }
+    failures.extend(
+        label
+        for name, label in failure_labels.items()
+        if metrics[name] is not None and metrics[name] < 1
+    )
     # Never let operational compliance masquerade as answer quality. An
     # aggregate score exists only when the case contains semantic gold.
     overall = (
@@ -233,13 +266,63 @@ def _score_case(case: EvaluationCase, observed: ObservedResponse) -> CaseScore:
     )
     return CaseScore(
         case_id=case.case_id,
+        tags=case.tags,
+        task_type=case.task_type,
+        oracle_type=str(case.oracle_type),
+        criticality=case.criticality,
         quality_score=(round(quality_score, 4) if quality_score is not None else None),
         operational_score=(round(operational_score, 4) if operational_score is not None else None),
         overall=round(overall, 4) if overall is not None else None,
         failures=failures,
         run_id=observed.run_id,
+        elapsed_seconds=observed.elapsed_seconds,
+        billable_tokens=observed.billable_tokens,
+        pages_fetched=observed.pages_fetched,
         **{key: round(value, 4) if value is not None else None for key, value in metrics.items()},
     )
+
+
+def _build_slices(results: list[CaseScore]) -> dict[str, SliceSummary]:
+    members: dict[str, list[CaseScore]] = {}
+    for result in results:
+        keys = {
+            *(f"tag:{tag}" for tag in result.tags),
+            f"oracle:{result.oracle_type}",
+            f"criticality:{result.criticality}",
+        }
+        if result.task_type:
+            keys.add(f"task:{result.task_type}")
+        for key in keys:
+            members.setdefault(key, []).append(result)
+    slices: dict[str, SliceSummary] = {}
+    for key, items in sorted(members.items()):
+        slices[key] = SliceSummary(
+            case_count=len(items),
+            missing_responses=sum("missing_response" in item.failures for item in items),
+            semantic_gold_cases=sum(
+                item.oracle_type == "semantic_gold" for item in items
+            ),
+            quality_score=_average(item.quality_score for item in items),
+            operational_score=_average(item.operational_score for item in items),
+            overall=_average(item.overall for item in items),
+            avg_elapsed_seconds=_average(
+                item.elapsed_seconds
+                for item in items
+                if "missing_response" not in item.failures
+            ),
+            avg_billable_tokens=_average(
+                item.billable_tokens
+                for item in items
+                if item.billable_tokens is not None
+                and "missing_response" not in item.failures
+            ),
+        )
+    return slices
+
+
+def _average(values) -> float | None:
+    selected = [float(value) for value in values if value is not None]
+    return round(sum(selected) / len(selected), 4) if selected else None
 
 
 def _expectation_match(expectation: str, happened: bool) -> float | None:

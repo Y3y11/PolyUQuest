@@ -1,0 +1,4 @@
+{"case_id":"blocker","response_status":"answered","answer":"Apply online.","billable_tokens":102,"elapsed_seconds":2.1,"run_id":"candidate-1"}
+{"case_id":"critical","response_status":"answered","answer":"Admission depends on official review.","billable_tokens":82,"elapsed_seconds":2.1,"run_id":"candidate-2"}
+{"case_id":"freshness","response_status":"answered","pages_fetched":1,"billable_tokens":122,"elapsed_seconds":5.1,"run_id":"candidate-3"}
+{"case_id":"standard","response_status":"answered","evidence_urls":["https://example.edu/policy/current"],"billable_tokens":62,"elapsed_seconds":1.1,"run_id":"candidate-4"}

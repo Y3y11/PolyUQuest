@@ -1,0 +1,45 @@
+schema_version: "1.0"
+policy_id: institutional-web-agent-release
+version: "1.0.0"
+missing_metric_policy: insufficient_evidence
+evidence:
+  allowed_dataset_statuses:
+    - approved
+  minimum_cases: 50
+  minimum_semantic_gold_cases: 25
+  minimum_semantic_gold_ratio: 0.5
+candidate_floors:
+  - metric: quality_score
+    minimum: 0.85
+  - metric: operational_score
+    minimum: 0.90
+  - metric: missing_responses
+    maximum: 0
+  - metric: forbidden_claim_rate
+    maximum: 0.01
+regression_limits:
+  - metric: quality_score
+    direction: higher_better
+    max_degradation: 0.02
+  - metric: operational_score
+    direction: higher_better
+    max_degradation: 0.03
+cost_ratio_limits:
+  - metric: avg_elapsed_seconds
+    maximum_ratio: 1.20
+  - metric: avg_billable_tokens
+    maximum_ratio: 1.25
+  - metric: avg_pages_fetched
+    maximum_ratio: 1.25
+critical:
+  case_metric: overall
+  max_case_degradation: 0.0
+  max_blocker_regressions: 0
+  max_critical_regressions: 1
+slices:
+  minimum_cases: 3
+  max_quality_degradation: 0.05
+  max_operational_degradation: 0.05
+  required_slices:
+    - tag:freshness
+    - tag:abstention

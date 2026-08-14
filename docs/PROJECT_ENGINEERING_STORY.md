@@ -116,6 +116,16 @@ Block 当前态更新后，进一步让 Entity/Relation 层与网页证据同步
 
 解决的问题：系统不仅能“做完一次回答”，还能够定位一次查询慢在哪里、花费在哪个模型阶段、在线发现是否最终入库、发布失败发生在哪次 attempt，并在同一冻结业务集上判断新版本究竟改善质量还是只增加成本。
 
+### 迭代 11：业务评测治理与自动发布门禁
+
+迭代 10 的 `score / compare` 能产出指标，但“有差值”不等于“能作发布决策”：示例 Smoke Case 可能被误当成质量证据，数据集没有审批、版本和文件 Hash，总体均值会掩盖 freshness/abstention 等关键切片回退，CI 也不会因有害版本自动失败。
+
+本轮引入 `EvaluationDatasetManifest`，冻结 dataset ID、版本、Owner、状态、Case 文件 SHA-256、最低样本量、Semantic Gold 比例、必需标签和审批记录。Case 明确区分 `semantic_gold / behavioral_contract / smoke`，并保留 task、tag 与 blocker/critical 等级。评分器只让真实语义 Oracle 产生 quality score；行为合同中的响应状态、探索、持久化和预算进入 operational score；Smoke 不再伪装成答案质量。
+
+Release Gate 同时检查 candidate 绝对下限、baseline 回退、延迟/Token/抓页成本比例、blocker/critical Case 和业务 Slice。缺少样本或指标返回 `insufficient_evidence`，已知硬回退返回 `fail`，两者都不能被当作通过。决策保留 policy、dataset、baseline/candidate report 和 decision fingerprint；wall-clock 时间变化不改变 gate ID。CLI 使用 `0/1/2/3` 区分 pass/fail/证据不足/输入错误，GitHub Actions 通过不访问 LLM、Neo4j、Qdrant 或真实网站的合成 Fixture 执行确定性门禁并上传审计 Artifact。
+
+解决的问题：评测不再只是一张人工阅读的平均分报表，而成为有数据治理前提、能识别长尾回退和成本劣化、能够实际阻止不安全变更进入发布流程的工程控制面。同时明确仓库 Sample 仍是 Draft 示例，不能冒充生产业务 Gold。
+
 ## 5. 当前总体架构
 
 ```text
@@ -159,7 +169,9 @@ Telemetry + Evaluation
   -> root Agent run -> child Index/Reconciliation runs
   -> ContextVar stage-level logical/billable LLM usage
   -> SQLite run/span ledger -> stats + configurable SLO API
-  -> frozen JSONL scenarios -> deterministic score/report/compare
+  -> governed Manifest + frozen JSONL scenarios
+  -> semantic/behavior/smoke scoring + business slices
+  -> deterministic baseline/candidate release gate + CI artifacts
 ```
 
 ## 6. 技术选型理由
@@ -173,6 +185,7 @@ Telemetry + Evaluation
 - Next.js/TypeScript：展示回答、引用、Agent 动作和知识图谱。
 - HTTP Conditional Request：复用 Web 原生 ETag/Last-Modified，而不是自造刷新协议。
 - Reconciliation Ledger：将数据漂移发现与修复执行分离；SQLite CAS 满足单机 MVP 的动作去重，未来可平滑迁移 PostgreSQL advisory lock。
+- Manifest + Policy-as-Code：把 Gold 数据审批、样本充足性、质量/成本阈值和关键切片规则纳入版本控制；确定性 Fixture 负责验证门禁机制，真实业务 Gold 由部署方独立治理。
 
 ## 7. 核心工程原则
 
@@ -191,6 +204,7 @@ Telemetry + Evaluation
 - 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
 - 事实冲突裁决、来源优先级与时态查询；
 - Human-in-the-loop 审批、租户隔离和敏感实体治理。
+- 建立 50～100 题以上经双人复核的真实业务 Gold、冻结网页证据快照和不可变 baseline registry，再将离线门禁衔接 shadow/canary 与自动回滚。
 
 ## 9. 对应文档
 
@@ -202,6 +216,7 @@ Telemetry + Evaluation
 - `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
 - `docs/CONSISTENCY_RECONCILIATION_PRD.md`：跨存储一致性扫描、修复计划与执行审计；
 - `docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`：端到端运行度量、SLO 与离线回归合同；
+- `docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md`：评测数据治理、业务切片和自动发布门禁；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

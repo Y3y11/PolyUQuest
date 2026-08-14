@@ -191,24 +191,42 @@ query hash, bounded counters, allowlisted identifiers, status, latency, and
 logical versus billable LLM usage. Telemetry writes are fail-open so an
 observability outage cannot break the answer path.
 
-For repeatable release checks, freeze business scenarios as JSONL and execute
-or score them with the deterministic evaluation CLI:
+For repeatable release checks, freeze business scenarios as JSONL, bind them to
+a versioned manifest, and validate the dataset before scoring. The checked-in
+sample manifest is intentionally `draft`; it demonstrates the contract but is
+not production business Gold:
 
 ```bash
+python -m agent_rag.evaluation.cli validate \
+  --manifest data/eval/agent_business_scenarios.sample.manifest.yaml \
+  --output data/runtime/eval/dataset-validation.json
+
 python -m agent_rag.evaluation.cli run \
-  --dataset data/eval/agent_business_scenarios.sample.jsonl \
+  --manifest data/eval/agent_business_scenarios.sample.manifest.yaml \
   --api-url http://127.0.0.1:8000 \
   --variant candidate --output data/runtime/eval/candidate.json
 
 python -m agent_rag.evaluation.cli compare \
   --baseline data/runtime/eval/baseline.json \
   --candidate data/runtime/eval/candidate.json
+
+python -m agent_rag.evaluation.cli gate \
+  --baseline data/runtime/eval/baseline.json \
+  --candidate data/runtime/eval/candidate.json \
+  --policy configs/release_gate.yaml \
+  --output data/runtime/eval/gate-decision.json
 ```
 
 Metrics without a reference fact/source are reported as `N/A`, not fabricated
 as zero. Report comparison rejects different dataset snapshots or evaluator
-contracts. See
-[`docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`](docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md).
+contracts. The release gate distinguishes `pass`, `fail`, and
+`insufficient_evidence`, checks absolute floors, regressions, cost ratios,
+critical cases, and business slices, and emits stable exit codes for CI. The
+deterministic GitHub Actions workflow uses synthetic fixtures and no LLM,
+Neo4j, Qdrant, production secret, or external website. See
+[`docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`](docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md)
+and
+[`docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md`](docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md).
 
 Changed pages are published with deterministic DOM Block Diff. Only modified,
 added, or missing-vector blocks are embedded; structurally relocated blocks
