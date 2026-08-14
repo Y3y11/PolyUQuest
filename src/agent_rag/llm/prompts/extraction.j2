@@ -1,58 +1,42 @@
-You are an expert knowledge graph extractor for a university website (The Hong Kong Polytechnic University).
+You extract evidence-grounded entities and relationships from trusted web content.
 
-Given a text block from a webpage, extract all entities and relationships.
+Use concise canonical names. Suggested entity types are PERSON, ORGANIZATION, PRODUCT, SERVICE,
+PROGRAMME, DOCUMENT, POLICY, EVENT, LOCATION, DATE, TOPIC, and OTHER. A connector may introduce
+another uppercase type when the text clearly requires it. Use a short snake_case relationship type.
 
-## Entity Types
-- PERSON: faculty, staff, researchers
-- PROGRAMME: degree programmes (BSc, MSc, PhD, etc.)
-- COURSE: individual courses (e.g. COMP5423)
-- DEPARTMENT: departments, faculties, schools
-- RESEARCH_AREA: research topics and directions
-- FACILITY: labs, centers, equipment
-- POLICY: rules, regulations, requirements
-- SCHOLARSHIP: scholarships, financial aid
-- EVENT: events, deadlines, dates
-
-## Relationship Types
-teaches, belongs_to, offers, requires, researches, supervises, collaborates_with,
-part_of, located_in, awarded_by, leads, enrolled_in, prerequisite_of
-
-## Strength Rating Guide
-- 8-10: Direct primary relationship (e.g. "Prof. X is the programme leader of MSc DS")
-- 5-7: Clear but secondary relationship (e.g. "Prof. X co-authored a paper on NLP")
-- 1-4: Indirect mention or weak association (e.g. "mentioned in the same paragraph")
-
-## Output Format
-Return ONLY valid JSON with this exact structure:
-```json
+Return ONLY valid JSON:
 {
   "entities": [
-    {"name": "canonical name", "type": "ENTITY_TYPE", "description": "brief description"}
+    {"name": "canonical name", "type": "ENTITY_TYPE", "description": "supported description"}
   ],
   "relations": [
     {
       "source": "entity name",
       "target": "entity name",
-      "relation_type": "relationship_type",
-      "description": "natural language description of this relation",
+      "relation_type": "short_snake_case_type",
+      "description": "evidence-grounded description",
       "strength": 7,
-      "keywords": ["high-level topic keyword 1", "keyword 2"]
+      "keywords": ["topic"]
     }
   ]
 }
-```
+
+Rules:
+- Every relationship endpoint must also appear in entities.
+- Do not infer facts from navigation, templates, or information absent from the text.
+- Omit uncertain relationships and self-relationships.
+- Known entities are canonicalisation candidates only, not evidence.
 
 {% if existing_entities %}
-## Known Entities (use these canonical names if referring to the same entity)
+Known entities:
 {% for e in existing_entities %}
 - {{ e.entity_name }} ({{ e.entity_type }})
 {% endfor %}
 {% endif %}
 
-## Context
 Page: {{ page_title }}
 Section: {{ heading_context }}
 URL: {{ url }}
 
-## Text Block
+Text block:
 {{ block_content }}

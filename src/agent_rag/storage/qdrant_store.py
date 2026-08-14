@@ -249,6 +249,33 @@ class QdrantStore:
                 out[sid] = list(vec)
         return out
 
+    def retrieve_payloads(
+        self, collection: str, ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch payloads for exact point IDs in one HTTP round-trip."""
+        _check_forbidden(collection)
+        if not ids:
+            return {}
+        int_ids = [self._str_to_int_id(item) for item in ids]
+        int_to_str = dict(zip(int_ids, ids, strict=True))
+
+        def _retrieve():
+            return self._client.retrieve(
+                collection_name=collection,
+                ids=int_ids,
+                with_vectors=False,
+                with_payload=True,
+            )
+
+        records = _retry_transient(
+            _retrieve, operation=f"retrieve_payloads:{collection}"
+        )
+        return {
+            int_to_str[int(record.id)]: dict(record.payload or {})
+            for record in records
+            if int(record.id) in int_to_str
+        }
+
     def search_batch(
         self, requests: list[dict[str, Any]]
     ) -> list[list[dict[str, Any]]]:

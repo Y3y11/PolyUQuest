@@ -43,3 +43,6 @@ def test_static_version_stats_route_precedes_dynamic_version_route() -> None:
     assert paths.index("/indexing/version-stats") < paths.index(
         "/indexing/versions/{version_id}"
     )
+    assert paths.index("/indexing/knowledge-stats") < paths.index(
+        "/indexing/versions/{version_id}"
+    )

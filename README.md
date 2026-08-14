@@ -180,6 +180,18 @@ vector. Every Patch has a durable PageVersion audit record. Inspect it through:
 - `GET /api/indexing/versions` and `/api/indexing/versions/{version_id}`;
 - `GET /api/indexing/version-stats` for embedding savings and change ratios.
 
+The same diff drives incremental knowledge enrichment. Only semantically changed
+or added blocks are sent to the extraction model; relocated blocks migrate their
+provenance without another LLM call. Current Entity/Relation state remains in
+Neo4j/Qdrant, while SQLite keeps bitemporal fact versions and replayable
+KnowledgeDelta records. Operations are available through:
+
+- `GET /api/indexing/facts` and `/api/indexing/facts/{fact_key}/history`;
+- `GET /api/indexing/knowledge-stats`.
+
+Long-running extraction is protected by an Index Worker lease heartbeat, so a
+second worker cannot reclaim the same job while the first still owns it.
+
 Agent query analysis uses an open-domain `entity + qualifier + intent +
 required_claim` contract. Institution names and seed labels live in connector
 configuration; the core planner/evaluator does not contain PolyU department or
@@ -216,6 +228,7 @@ PolyUQuest/
 │   ├── retrieval/        # router + retrieval modes (direct/nav/reasoning/hybrid)
 │   ├── storage/          # Neo4j + Qdrant adapters
 │   ├── kg/               # knowledge-graph extraction & resolution
+│   ├── knowledge/        # incremental fact delta + bitemporal history
 │   ├── crawler/          # web crawler + URL filter
 │   ├── html_processing/  # DOM → block-tree cleaner
 │   └── llm/              # LLM client + Jinja prompt templates

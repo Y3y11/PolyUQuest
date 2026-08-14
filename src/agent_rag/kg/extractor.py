@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import json_repair
 import structlog
@@ -25,29 +26,31 @@ _PAGE_PROMPT_PATH = Path(__file__).parent.parent / "llm" / "prompts" / "extracti
 _PAGE_TEMPLATE = Template(_PAGE_PROMPT_PATH.read_text(encoding="utf-8"))
 
 ENTITY_TYPES = (
-    "PERSON", "PROGRAMME", "COURSE", "DEPARTMENT",
-    "RESEARCH_AREA", "FACILITY", "POLICY", "SCHOLARSHIP", "EVENT",
+    "PERSON",
+    "ORGANIZATION",
+    "PRODUCT",
+    "SERVICE",
+    "PROGRAMME",
+    "DOCUMENT",
+    "POLICY",
+    "EVENT",
+    "LOCATION",
+    "DATE",
+    "TOPIC",
+    "OTHER",
 )
 
 
 class ExtractedEntity(BaseModel):
     name: str
-    type: Literal[
-        "PERSON", "PROGRAMME", "COURSE", "DEPARTMENT",
-        "RESEARCH_AREA", "FACILITY", "POLICY", "SCHOLARSHIP", "EVENT",
-    ]
+    type: str
     description: str
 
     @field_validator("type", mode="before")
     @classmethod
     def normalize_type(cls, v: str) -> str:
-        v = v.upper().strip()
-        if v in ENTITY_TYPES:
-            return v
-        for et in ENTITY_TYPES:
-            if et in v:
-                return et
-        return "RESEARCH_AREA"
+        value = str(v or "OTHER").upper().strip().replace(" ", "_")
+        return value if value else "OTHER"
 
 
 class ExtractedRelation(BaseModel):
@@ -137,7 +140,12 @@ def extract_from_block(
                 )
                 break
             except Exception as exc:
-                logger.warning("extraction_llm_error", block_id=block_id, attempt=attempt, error=str(exc))
+                logger.warning(
+                    "extraction_llm_error",
+                    block_id=block_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
                 if attempt == max_retries:
                     return ExtractionResult()
 
@@ -155,16 +163,12 @@ def extract_from_block(
         logger.warning("extraction_validation_failed", block_id=block_id, error=str(exc))
         entities = []
         for e in data.get("entities", []):
-            try:
+            with suppress(Exception):
                 entities.append(ExtractedEntity.model_validate(e))
-            except Exception:
-                pass
         relations = []
         for r in data.get("relations", []):
-            try:
+            with suppress(Exception):
                 relations.append(ExtractedRelation.model_validate(r))
-            except Exception:
-                pass
         result = ExtractionResult(entities=entities, relations=relations)
 
     logger.info(
@@ -259,6 +263,7 @@ def extract_from_page(
     page_type: str = "",
     existing_entities: list[dict[str, str]] | None = None,
     llm: LLMClient | None = None,
+    strict: bool = False,
 ) -> PageExtractionResult:
     """Single-call page-level extraction (synchronous). Uses llm_cache keyed by page signature."""
     if not blocks:
@@ -279,7 +284,8 @@ def extract_from_page(
         return _parse_page_response(cached, ref_to_bid)
 
     if llm is None:
-        llm = LLMClient()
+        model_override = llm_config.get("extraction", {}).get("model")
+        llm = LLMClient(model=model_override) if model_override else LLMClient()
     ext_cfg = llm_config.get("extraction", {})
     max_retries = ext_cfg.get("max_retries", 2)
     temp = ext_cfg.get("temperature", 0.0)
@@ -296,10 +302,35 @@ def extract_from_page(
         except Exception as exc:
             logger.warning("page_extraction_llm_error", url=url, attempt=attempt, error=str(exc))
             if attempt == max_retries:
+                if strict:
+                    raise RuntimeError(
+                        f"Knowledge extraction failed for {url}: {exc}"
+                    ) from exc
                 return PageExtractionResult()
 
     set_cached(cache_key, p_hash, raw)
-    return _parse_page_response(raw, ref_to_bid)
+    parsed = _parse_page_response(raw, ref_to_bid)
+    if strict and raw.strip() and not parsed.entities and not parsed.relations:
+        try:
+            data = json_repair.loads(raw)
+        except Exception as exc:
+            raise ValueError(f"Invalid extraction response for {url}") from exc
+        if data.get("entities") or data.get("relations"):
+            raise ValueError(f"Extraction response failed validation for {url}")
+    if strict:
+        if any(not item.source_block_refs for item in parsed.entities):
+            raise ValueError(f"Entity extraction lacks block provenance for {url}")
+        if any(not item.source_block_refs for item in parsed.relations):
+            raise ValueError(f"Relation extraction lacks block provenance for {url}")
+        names = {item.name.strip().casefold() for item in parsed.entities}
+        if any(
+            item.source.strip().casefold() not in names
+            or item.target.strip().casefold() not in names
+            or item.source.strip().casefold() == item.target.strip().casefold()
+            for item in parsed.relations
+        ):
+            raise ValueError(f"Relation extraction has invalid endpoints for {url}")
+    return parsed
 
 
 async def _extract_page_async(
@@ -398,15 +429,11 @@ async def extract_pages_async(
 
     results: dict[str, PageExtractionResult] = {}
     total = len(tasks)
-    done = 0
-    for coro in asyncio.as_completed(tasks):
+    for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
         url, res = await coro
         results[url] = res
-        done += 1
         if progress_callback:
-            try:
+            with suppress(Exception):
                 progress_callback(done, total)
-            except Exception:
-                pass
 
     return results

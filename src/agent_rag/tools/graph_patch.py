@@ -92,6 +92,8 @@ class PublishPatchTool:
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
         lifecycle_store: PageLifecycleStore | None = None,
         version_store: PageVersionStore | None = None,
+        extractor: Callable[..., object] | None = None,
+        fact_store: object | None = None,
     ):
         self._observations = observations
         self._patches = patches
@@ -107,6 +109,12 @@ class PublishPatchTool:
 
             version_store = page_version_store
         self._version_store = version_store
+        self._extractor = extractor
+        if fact_store is None:
+            from agent_rag.knowledge import fact_version_store
+
+            fact_store = fact_version_store
+        self._fact_store = fact_store
 
     def run(self, tool_input: PublishPatchInput) -> PublishPatchOutput:
         patch = self._patches.get(tool_input.patch_id)
@@ -205,6 +213,87 @@ class PublishPatchTool:
             version.status = "publishing"
             version.error = None
             self._version_store.save(version)
+
+            extraction_ids = sorted({*plan.modified_ids, *plan.added_ids})
+            affected_old_ids = sorted(
+                {
+                    *plan.modified_ids,
+                    *plan.deleted_ids,
+                    *(item.old_id for item in plan.relocated),
+                }
+            )
+            if version.knowledge_delta is None:
+                from agent_rag.kg.extractor import extract_from_page
+                from agent_rag.knowledge import (
+                    FactDelta,
+                    build_knowledge_delta,
+                    merge_current_facts,
+                )
+
+                extraction_blocks = [
+                    block for block in blocks if block["block_id"] in extraction_ids
+                ]
+                entity_candidates: list[dict[str, str]] = []
+                extraction = None
+                if extraction_blocks:
+                    extractor = self._extractor or extract_from_page
+                    extraction = extractor(
+                        patch.source_url,
+                        extraction_blocks,
+                        page_title=page.get("title", ""),
+                        page_type=page.get("page_type", ""),
+                        existing_entities=[],
+                        strict=True,
+                    )
+                    version.extraction_calls = 1
+                    entity_candidates = [
+                        {"name": item.name, "entity_type": item.type}
+                        for item in extraction.entities
+                    ]
+                else:
+                    from agent_rag.kg.extractor import PageExtractionResult
+
+                    extraction = PageExtractionResult()
+                existing_entities = graph_store.neo4j.find_entities_by_names(
+                    entity_candidates
+                )
+                delta = build_knowledge_delta(
+                    extraction,
+                    extraction_block_ids=extraction_ids,
+                    affected_old_block_ids=affected_old_ids,
+                    relocated_blocks={
+                        item.old_id: item.new_id for item in plan.relocated
+                    },
+                    existing_entities=existing_entities,
+                )
+                old_fact_rows = [
+                    *graph_store.neo4j.get_relations_for_source_blocks(
+                        affected_old_ids
+                    ),
+                    *graph_store.neo4j.get_relations_for_candidates(
+                        [item.model_dump() for item in delta.facts]
+                    ),
+                ]
+                old_facts = []
+                seen_old_facts: set[str] = set()
+                for row in old_fact_rows:
+                    payload = dict(row)
+                    if not payload.get("fact_key"):
+                        from agent_rag.kg.profiler import relation_id
+
+                        payload["fact_key"] = relation_id(
+                            payload["source_id"],
+                            payload["target_id"],
+                            payload["relation_type"],
+                        )
+                    fact = FactDelta.model_validate(payload)
+                    if fact.fact_key in seen_old_facts:
+                        continue
+                    seen_old_facts.add(fact.fact_key)
+                    old_facts.append(fact)
+                version.knowledge_delta = merge_current_facts(delta, old_facts)
+                self._version_store.save(version)
+            knowledge_delta = version.knowledge_delta
 
             lookup_ids = list(
                 dict.fromkeys(
@@ -308,6 +397,96 @@ class PublishPatchTool:
                 write_blocks, vectors_by_id, build_id
             )
 
+            from agent_rag.kg.profiler import entity_to_kv, relation_to_kv
+
+            entity_profiles = {
+                item["entity_id"]: item for item in knowledge_delta.entities
+            }
+            for mention in knowledge_delta.mentions:
+                entity_profiles.setdefault(
+                    mention.entity_id,
+                    {
+                        "entity_id": mention.entity_id,
+                        "entity_name": mention.entity_name,
+                        "entity_type": mention.entity_type,
+                        "description": mention.description,
+                        "aliases": [],
+                    },
+                )
+            entity_ids = sorted(entity_profiles)
+            existing_entity_vectors = graph_store.qdrant.retrieve_vectors(
+                "entities", entity_ids
+            )
+            entity_embed_items = [
+                item
+                for item in entity_profiles.values()
+                if item["entity_id"] not in existing_entity_vectors
+            ]
+            entity_vectors = dict(existing_entity_vectors)
+            entity_vectors_to_write: dict[str, list[float]] = {}
+            if entity_embed_items:
+                generated = embedder(
+                    [entity_to_kv(item)["text_for_embedding"] for item in entity_embed_items]
+                )
+                entity_vectors_to_write = {
+                    item["entity_id"]: vector
+                    for item, vector in zip(
+                        entity_embed_items, generated, strict=True
+                    )
+                }
+                entity_vectors.update(entity_vectors_to_write)
+
+            fact_ids = [item.fact_key for item in knowledge_delta.facts]
+            existing_relation_vectors = graph_store.qdrant.retrieve_vectors(
+                "relations", fact_ids
+            )
+            semantic_fact_keys = {
+                *knowledge_delta.semantic_changed_fact_keys,
+                *(
+                    item.fact_key
+                    for item in knowledge_delta.facts
+                    if item.fact_key not in existing_relation_vectors
+                ),
+            }
+            relation_embed_items = [
+                item for item in knowledge_delta.facts
+                if item.fact_key in semantic_fact_keys
+            ]
+            relation_vectors = dict(existing_relation_vectors)
+            if relation_embed_items:
+                generated = embedder(
+                    [
+                        relation_to_kv(
+                            {
+                                **item.model_dump(),
+                                "source": item.source_name,
+                                "target": item.target_name,
+                            }
+                        )["text_for_embedding"]
+                        for item in relation_embed_items
+                    ]
+                )
+                relation_vectors.update(
+                    {
+                        item.fact_key: vector
+                        for item, vector in zip(
+                            relation_embed_items, generated, strict=True
+                        )
+                    }
+                )
+
+            observed_at = observation.metadata.get("fetched_at") or _now()
+            graph_store.apply_incremental_knowledge(
+                delta=knowledge_delta,
+                entity_vectors=entity_vectors_to_write,
+                relation_vectors={
+                    key: relation_vectors[key] for key in semantic_fact_keys
+                },
+                build_id=build_id,
+                version_id=version.version_id,
+                observed_at=observed_at,
+            )
+
             orphan_block_ids, links_deleted = (
                 graph_store.neo4j.reconcile_agent_page_snapshot(
                     patch.source_url,
@@ -326,30 +505,56 @@ class PublishPatchTool:
             vector_pages = graph_store.qdrant.retrieve_vectors(
                 "webpages", [patch.source_url]
             )
+            knowledge_ok = graph_store.verify_incremental_knowledge(
+                delta=knowledge_delta,
+                required_entity_ids=entity_ids,
+            )
             read_ok = (
                 patch.source_url in neo_pages
                 and {block.get("block_id") for block in neo_blocks} == set(block_ids)
                 and len(vector_blocks) == len(blocks)
                 and (not page_text or patch.source_url in vector_pages)
+                and knowledge_ok
             )
-            patch.status = "published" if read_ok else "repair_required"
-            patch.updated_at = _now()
-            if not read_ok:
-                patch.error = "Read-after-write verification failed"
-            self._patches.put(patch)
             if read_ok:
-                version.status = "published"
                 version.page_embeddings = page_embedding_count
                 version.block_embeddings = len(embed_ids)
                 version.reused_block_vectors = reused_count
                 version.blocks_written = len(write_blocks)
                 version.blocks_deleted = len(orphan_block_ids)
+                version.entity_embeddings = len(entity_embed_items)
+                version.relation_embeddings = len(relation_embed_items)
+                if not version.fact_history_applied:
+                    facts_added, facts_updated, facts_retired = self._fact_store.apply(
+                        source_url=patch.source_url,
+                        version_id=version.version_id,
+                        valid_at=observed_at,
+                        current_facts=knowledge_delta.facts,
+                        retired_fact_keys=[
+                            item.fact_key for item in knowledge_delta.retired_facts
+                        ],
+                        previous_facts=knowledge_delta.previous_facts,
+                    )
+                    version.facts_added = facts_added
+                    version.facts_updated = facts_updated
+                    version.facts_retired = facts_retired
+                    version.fact_history_applied = True
+                    self._version_store.save(version)
+                version.status = "published"
                 self._version_store.save(version)
+                patch.status = "published"
+                patch.error = None
+                patch.updated_at = _now()
+                self._patches.put(patch)
                 lifecycle = self._register_lifecycle(patch, observation)
                 graph_store.neo4j.update_webpage_lifecycle(
                     patch.source_url, lifecycle.model_dump()
                 )
             else:
+                patch.status = "repair_required"
+                patch.updated_at = _now()
+                patch.error = "Read-after-write verification failed"
+                self._patches.put(patch)
                 version.status = "repair_required"
                 version.error = patch.error
                 self._version_store.save(version)
@@ -361,6 +566,12 @@ class PublishPatchTool:
                 page_embeddings=page_embedding_count,
                 block_embeddings=len(embed_ids),
                 blocks_reused=reused_count,
+                extraction_calls=version.extraction_calls,
+                entity_embeddings=len(entity_embed_items),
+                relation_embeddings=len(relation_embed_items),
+                facts_added=version.facts_added,
+                facts_updated=version.facts_updated,
+                facts_retired=version.facts_retired,
                 links_written=len(links),
                 blocks_deleted=len(orphan_block_ids),
                 links_deleted=links_deleted,

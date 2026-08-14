@@ -90,6 +90,14 @@ Freshness Worker 发现页面变化后，不再默认重做整页所有向量。
 
 解决的问题：局部网页变化不再放大全页模型调用与双存储写入；更新成本可量化，DOM 位移可识别，失败版本可追踪并可幂等修复。
 
+### 迭代 8：增量实体关系更新与事实时态
+
+Block 当前态更新后，进一步让 Entity/Relation 层与网页证据同步演进。系统只对 modified/added Block 执行一次页面级抽取；deleted/modified Block 撤销旧事实支持，relocated Block 迁移证据 ID 而不调用 LLM。关系只有在最后一个支持块消失时才从 Neo4j/Qdrant 当前态退休，避免局部更新误删仍由其他页面或段落支持的事实。
+
+抽取核心从 PolyU/大学固定 ontology 改为领域无关 typed contract，支持企业产品、服务、文档、政策、组织与站点扩展类型。Neo4j/Qdrant 继续只服务当前事实；SQLite `fact_versions` 保存 valid time、transaction time、来源 Block 和引入/退休 PageVersion，并用事件表保证重试后的指标幂等。PageVersion 持久化 KnowledgeDelta，跨存储中途失败时无需重新调用 LLM；Index Worker heartbeat 保护长抽取任务的 lease 所有权。
+
+解决的问题：页面文本、结构块和知识图关系不再出现版本错层；当前检索不会读到已失效事实，同时历史演进、故障重放和成本指标可审计。
+
 ## 5. 当前总体架构
 
 ```text
@@ -106,10 +114,12 @@ Next.js UI
       -> GraphPatch -> SQLite Outbox
 
 Index Worker
-  -> lease / retry / dead letter
+  -> lease heartbeat / retry / dead letter
   -> PublishPatchTool
   -> PageVersion + deterministic DOM Block Diff
   -> changed-only Embedding + relocated vector reuse
+  -> changed-block extraction + KnowledgeDelta
+  -> current Entity/Relation graph + bitemporal Fact Ledger
   -> Neo4j WebPage-Block-Entity graph
   -> Qdrant vectors
   -> read-after-write verification
@@ -147,7 +157,8 @@ Freshness Worker
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
 - OpenTelemetry/Prometheus 与运营面板；
 - 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
-- 增量 Entity/Topic 抽取和双时态知识演进。
+- 事实冲突裁决、来源优先级与时态查询；
+- Human-in-the-loop 审批、租户隔离和敏感实体治理。
 
 ## 9. 对应文档
 
@@ -158,6 +169,7 @@ Freshness Worker
 - `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
 - `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
+- `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
 
 简历写法和面试准备将在架构能力稳定、关键指标补齐后写入本文后续章节，避免把尚未验证的工程指标提前包装为成果。

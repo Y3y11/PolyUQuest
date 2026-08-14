@@ -530,11 +530,11 @@ class Neo4jStore:
         """
         rows = [
             {
-                "entity_id": l["entity_id"],
-                "block_id": l["block_id"],
-                "mention_form": l.get("mention_form", ""),
+                "entity_id": link["entity_id"],
+                "block_id": link["block_id"],
+                "mention_form": link.get("mention_form", ""),
             }
-            for l in links
+            for link in links
         ]
         with self._driver.session() as session:
             for i in range(0, len(rows), batch_size):
@@ -660,7 +660,9 @@ class Neo4jStore:
             entities = [r["id"] for r in session.run(entity_query, urls=urls)]
         return {"webpages": list(urls), "blocks": blocks, "entities": entities}
 
-    def collect_relation_ids_for_entities(self, entity_ids: list[str]) -> list[tuple[str, str, str]]:
+    def collect_relation_ids_for_entities(
+        self, entity_ids: list[str]
+    ) -> list[tuple[str, str, str]]:
         """Return (source_id, target_id, relation_type) tuples for RELATES_TO
         edges where at least one endpoint is in `entity_ids`.
 
@@ -677,7 +679,10 @@ class Neo4jStore:
           r.relation_type AS rtype
         """
         with self._driver.session() as session:
-            return [(r["sid"], r["tid"], r["rtype"]) for r in session.run(query, eids=entity_ids)]
+            return [
+                (r["sid"], r["tid"], r["rtype"])
+                for r in session.run(query, eids=entity_ids)
+            ]
 
     def find_orphans(self, current_build_id: str, limit: int = 50000) -> dict[str, list[str]]:
         """Return per-class orphan ids whose last_seen_build_id != current.
@@ -733,22 +738,14 @@ class Neo4jStore:
              "DELETE r RETURN count(r) AS c"),
         ]
         node_queries = [
-            ("Block",
-             "MATCH (n:Block) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
-             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
-             "DETACH DELETE n RETURN count(n) AS c"),
-            ("Entity",
-             "MATCH (n:Entity) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
-             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
-             "DETACH DELETE n RETURN count(n) AS c"),
-            ("TopicKeyword",
-             "MATCH (n:TopicKeyword) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
-             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
-             "DETACH DELETE n RETURN count(n) AS c"),
-            ("WebPage",
-             "MATCH (n:WebPage) WHERE n.last_seen_build_id IS NOT NULL AND n.last_seen_build_id <> $cur "
-             "AND coalesce(n.source_type, '') <> 'agent_fetch' "
-             "DETACH DELETE n RETURN count(n) AS c"),
+            (
+                label,
+                f"MATCH (n:{label}) WHERE n.last_seen_build_id IS NOT NULL "
+                "AND n.last_seen_build_id <> $cur "
+                "AND coalesce(n.source_type, '') <> 'agent_fetch' "
+                "DETACH DELETE n RETURN count(n) AS c",
+            )
+            for label in ("Block", "Entity", "TopicKeyword", "WebPage")
         ]
         with self._driver.session() as session:
             for name, q in edge_queries + node_queries:
@@ -880,13 +877,17 @@ class Neo4jStore:
             """
             params = {"url": url}
         with self._driver.session() as session:
-            return [{"page": dict(r["p"]), "anchor": r.get("anchor", "")} for r in session.run(query, **params)]
+            return [
+                {"page": dict(r["p"]), "anchor": r.get("anchor", "")}
+                for r in session.run(query, **params)
+            ]
 
     def get_entity_neighbors(
         self, entity_id: str, max_hops: int = 2, top_m: int = 10
     ) -> list[dict[str, Any]]:
-        query = """
-        MATCH (e:Entity {entity_id: $entity_id})-[r:RELATES_TO*1..%d]-(n:Entity)
+        query = f"""
+        MATCH (e:Entity {{entity_id: $entity_id}})
+              -[r:RELATES_TO*1..{max_hops}]-(n:Entity)
         WITH DISTINCT n, r
         UNWIND r AS rel
         RETURN n.entity_id AS entity_id, n.entity_name AS entity_name,
@@ -894,7 +895,7 @@ class Neo4jStore:
                rel.weight AS weight, rel.relation_type AS relation_type
         ORDER BY rel.weight DESC
         LIMIT $top_m
-        """ % max_hops
+        """
         with self._driver.session() as session:
             return [dict(r) for r in session.run(query, entity_id=entity_id, top_m=top_m)]
 
@@ -919,22 +920,25 @@ class Neo4jStore:
         if not ids_list:
             return {}
 
-        query = """
+        query = f"""
         UNWIND $ids AS eid
-        MATCH (e:Entity {entity_id: eid})-[r:RELATES_TO*1..%d]-(n:Entity)
-        WITH eid, n, r, reduce(w = 0.0, rel IN r | w + coalesce(rel.weight, 0.0)) AS path_weight,
+        MATCH (e:Entity {{entity_id: eid}})
+              -[r:RELATES_TO*1..{max_hops}]-(n:Entity)
+        WITH eid, n, r,
+             reduce(w = 0.0, rel IN r | w + coalesce(rel.weight, 0.0))
+             AS path_weight,
              [rel IN r | rel.relation_type] AS rel_types
         ORDER BY path_weight DESC
-        WITH eid, collect({
+        WITH eid, collect({{
             entity_id: n.entity_id,
             entity_name: n.entity_name,
             entity_type: n.entity_type,
             description: n.description,
             weight: path_weight,
             relation_type: rel_types[0]
-        })[0..$top_m] AS neighbors
+        }})[0..$top_m] AS neighbors
         RETURN eid, neighbors
-        """ % max_hops
+        """
 
         result: dict[str, list[dict[str, Any]]] = {eid: [] for eid in ids_list}
         with self._driver.session() as session:
@@ -986,7 +990,8 @@ class Neo4jStore:
         WHERE a.entity_id IN $ids AND b.entity_id IN $ids
           AND a.entity_id < b.entity_id
         WITH a, b, r,
-             CASE WHEN a.entity_id IN $anchors AND b.entity_id IN $anchors THEN 1 ELSE 0 END AS anchor_pair
+             CASE WHEN a.entity_id IN $anchors AND b.entity_id IN $anchors
+                  THEN 1 ELSE 0 END AS anchor_pair
         RETURN a.entity_id   AS source_id,
                a.entity_name AS source_name,
                b.entity_id   AS target_id,
@@ -1169,6 +1174,262 @@ class Neo4jStore:
         """
         with self._driver.session() as session:
             return [dict(r["e"]) for r in session.run(query, block_id=block_id)]
+
+    def find_entities_by_names(
+        self, candidates: list[dict[str, str]]
+    ) -> list[dict[str, Any]]:
+        """Find exact canonical/alias candidates without scanning in Python."""
+        if not candidates:
+            return []
+        query = """
+        UNWIND $rows AS item
+        MATCH (e:Entity)
+        WHERE (
+            toLower(e.entity_name) = toLower(item.name)
+            OR any(alias IN coalesce(e.aliases, [])
+                   WHERE toLower(alias) = toLower(item.name))
+          )
+        RETURN DISTINCT e
+        """
+        with self._driver.session() as session:
+            return [
+                dict(row["e"])
+                for row in session.run(query, rows=candidates)
+            ]
+
+    def get_relations_for_source_blocks(
+        self, block_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Return complete current facts touched by any selected evidence block."""
+        if not block_ids:
+            return []
+        query = """
+        MATCH (source:Entity)-[rel:RELATES_TO]->(target:Entity)
+        WHERE any(block_id IN coalesce(rel.source_block_ids, [])
+                  WHERE block_id IN $block_ids)
+        RETURN source.entity_id AS source_id,
+               source.entity_name AS source_name,
+               target.entity_id AS target_id,
+               target.entity_name AS target_name,
+               rel.relation_type AS relation_type,
+               coalesce(rel.fact_key, '') AS fact_key,
+               coalesce(rel.description, '') AS description,
+               coalesce(rel.keywords, []) AS keywords,
+               coalesce(rel.weight, 1.0) AS weight,
+               coalesce(rel.source_block_ids, []) AS source_block_ids
+        """
+        with self._driver.session() as session:
+            return [dict(row) for row in session.run(query, block_ids=block_ids)]
+
+    def get_relations_for_candidates(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Load existing complete supports for newly extracted fact identities."""
+        if not candidates:
+            return []
+        query = """
+        UNWIND $rows AS item
+        MATCH (source:Entity {entity_id: item.source_id})
+              -[rel:RELATES_TO {relation_type: item.relation_type}]->
+              (target:Entity {entity_id: item.target_id})
+        RETURN source.entity_id AS source_id,
+               source.entity_name AS source_name,
+               target.entity_id AS target_id,
+               target.entity_name AS target_name,
+               rel.relation_type AS relation_type,
+               coalesce(rel.fact_key, item.fact_key) AS fact_key,
+               coalesce(rel.description, '') AS description,
+               coalesce(rel.keywords, []) AS keywords,
+               coalesce(rel.weight, 1.0) AS weight,
+               coalesce(rel.source_block_ids, []) AS source_block_ids
+        """
+        with self._driver.session() as session:
+            return [dict(row) for row in session.run(query, rows=candidates)]
+
+    def apply_incremental_knowledge(
+        self,
+        *,
+        entities: list[dict[str, Any]],
+        mentions: list[dict[str, Any]],
+        facts: list[dict[str, Any]],
+        retired_facts: list[dict[str, Any]],
+        affected_old_block_ids: list[str],
+        relocated_blocks: dict[str, str],
+        build_id: str,
+        version_id: str,
+        observed_at: str,
+    ) -> None:
+        """Apply one KnowledgeDelta atomically to Neo4j's current-state graph."""
+        relocations = [
+            {"old_id": old_id, "new_id": new_id}
+            for old_id, new_id in relocated_blocks.items()
+        ]
+
+        def _apply(tx):
+            tx.run(
+                """
+                UNWIND $rows AS item
+                MERGE (entity:Entity {entity_id: item.entity_id})
+                ON CREATE SET entity.entity_name = item.entity_name,
+                              entity.entity_type = item.entity_type,
+                              entity.description = item.description,
+                              entity.aliases = item.aliases,
+                              entity.created_build_id = $build_id
+                SET entity.last_seen_build_id = $build_id
+                """,
+                rows=entities,
+                build_id=build_id,
+            ).consume()
+            tx.run(
+                """
+                UNWIND $rows AS move
+                MATCH (entity:Entity)-[old:EXTRACTED_FROM]->
+                      (:Block {block_id: move.old_id})
+                MATCH (new_block:Block {block_id: move.new_id})
+                MERGE (entity)-[fresh:EXTRACTED_FROM]->(new_block)
+                SET fresh.mention_form = old.mention_form,
+                    fresh.page_version_id = $version_id
+                """,
+                rows=relocations,
+                version_id=version_id,
+            ).consume()
+            tx.run(
+                """
+                UNWIND $block_ids AS block_id
+                MATCH (:Entity)-[mention:EXTRACTED_FROM]->
+                      (:Block {block_id: block_id})
+                DELETE mention
+                """,
+                block_ids=affected_old_block_ids,
+            ).consume()
+            tx.run(
+                """
+                UNWIND $rows AS item
+                MATCH (entity:Entity {entity_id: item.entity_id})
+                MATCH (block:Block {block_id: item.block_id})
+                MERGE (entity)-[mention:EXTRACTED_FROM]->(block)
+                SET mention.mention_form = item.mention_form,
+                    mention.page_version_id = $version_id
+                """,
+                rows=mentions,
+                version_id=version_id,
+            ).consume()
+            tx.run(
+                """
+                UNWIND $rows AS item
+                MATCH (source:Entity {entity_id: item.source_id})
+                MATCH (target:Entity {entity_id: item.target_id})
+                MERGE (source)-[fact:RELATES_TO
+                    {relation_type: item.relation_type}]->(target)
+                ON CREATE SET fact.valid_from = $observed_at,
+                              fact.created_build_id = $build_id
+                SET fact.fact_key = item.fact_key,
+                    fact.description = item.description,
+                    fact.keywords = item.keywords,
+                    fact.weight = item.weight,
+                    fact.source_block_ids = item.source_block_ids,
+                    fact.last_observed_at = $observed_at,
+                    fact.page_version_id = $version_id,
+                    fact.last_seen_build_id = $build_id
+                """,
+                rows=facts,
+                observed_at=observed_at,
+                build_id=build_id,
+                version_id=version_id,
+            ).consume()
+            tx.run(
+                """
+                UNWIND $rows AS item
+                MATCH (source:Entity {entity_id: item.source_id})
+                      -[fact:RELATES_TO {relation_type: item.relation_type}]->
+                      (target:Entity {entity_id: item.target_id})
+                DELETE fact
+                """,
+                rows=retired_facts,
+            ).consume()
+
+        with self._driver.session() as session:
+            session.execute_write(_apply)
+
+    def verify_incremental_knowledge(
+        self,
+        *,
+        mentions: list[dict[str, Any]],
+        facts: list[dict[str, Any]],
+        retired_facts: list[dict[str, Any]],
+        affected_old_block_ids: list[str],
+        relocated_blocks: dict[str, str],
+    ) -> bool:
+        """Verify exact touched mentions, fact supports, and retirement."""
+        mention_keys = sorted(
+            (item["entity_id"], item["block_id"]) for item in mentions
+        )
+        fact_keys = sorted(item["fact_key"] for item in facts)
+        retired_keys = sorted(item["fact_key"] for item in retired_facts)
+        with self._driver.session() as session:
+            mention_rows = session.run(
+                """
+                UNWIND $rows AS item
+                MATCH (:Entity {entity_id: item.entity_id})
+                      -[:EXTRACTED_FROM]->(:Block {block_id: item.block_id})
+                RETURN item.entity_id AS entity_id, item.block_id AS block_id
+                """,
+                rows=[
+                    {"entity_id": entity_id, "block_id": block_id}
+                    for entity_id, block_id in mention_keys
+                ],
+            )
+            actual_mentions = sorted(
+                (row["entity_id"], row["block_id"]) for row in mention_rows
+            )
+            active_rows = session.run(
+                """
+                UNWIND $keys AS fact_key
+                MATCH ()-[fact:RELATES_TO {fact_key: fact_key}]->()
+                RETURN fact_key, fact.source_block_ids AS source_block_ids
+                """,
+                keys=fact_keys,
+            )
+            actual_facts = {
+                row["fact_key"]: sorted(row["source_block_ids"] or [])
+                for row in active_rows
+            }
+            expected_facts = {
+                item["fact_key"]: sorted(item["source_block_ids"])
+                for item in facts
+            }
+            retired_rows = session.run(
+                """
+                UNWIND $keys AS fact_key
+                MATCH ()-[fact:RELATES_TO {fact_key: fact_key}]->()
+                RETURN fact_key
+                """,
+                keys=retired_keys,
+            )
+            still_active = [row["fact_key"] for row in retired_rows]
+            touched_rows = session.run(
+                """
+                UNWIND $block_ids AS block_id
+                OPTIONAL MATCH (entity:Entity)-[:EXTRACTED_FROM]->
+                               (:Block {block_id: block_id})
+                RETURN block_id, entity.entity_id AS entity_id
+                """,
+                block_ids=affected_old_block_ids,
+            )
+            actual_touched_mentions = sorted(
+                (row["entity_id"], row["block_id"])
+                for row in touched_rows
+                if row["entity_id"] is not None
+            )
+            expected_touched_mentions = sorted(
+                key for key in mention_keys if key[1] in affected_old_block_ids
+            )
+        return (
+            actual_mentions == mention_keys
+            and actual_facts == expected_facts
+            and not still_active
+            and actual_touched_mentions == expected_touched_mentions
+        )
 
     def get_all_block_ids(self) -> set[str]:
         query = "MATCH (b:Block) RETURN b.block_id AS bid"

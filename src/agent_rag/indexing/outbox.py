@@ -293,6 +293,27 @@ class IndexOutbox:
             ).fetchone()
         return self._from_row(row)
 
+    def heartbeat(
+        self, job_id: str, worker_id: str, *, lease_seconds: int = 120
+    ) -> IndexJob:
+        """Extend an active lease using compare-and-set ownership semantics."""
+        now = _utc_now()
+        lease_until = _iso(now + timedelta(seconds=lease_seconds))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE index_jobs SET lease_until=?, updated_at=?
+                WHERE job_id=? AND status='running' AND worker_id=?
+                """,
+                (lease_until, _iso(now), job_id, worker_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Index job lease is no longer owned by this worker")
+            row = connection.execute(
+                "SELECT * FROM index_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+        return self._from_row(row)
+
     def fail(
         self,
         job_id: str,

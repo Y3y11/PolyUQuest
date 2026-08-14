@@ -7,6 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 
 from agent_rag.indexing.outbox import IndexJob, IndexJobStatus, index_outbox
+from agent_rag.knowledge import FactVersion, fact_version_store
+from agent_rag.knowledge.store import FactStatus
 from agent_rag.quality import PageQualityDecision, page_quality_store
 from agent_rag.quality.gate import QualityAction
 from agent_rag.versioning import PageVersion, page_version_store
@@ -83,6 +85,32 @@ def list_page_versions(
 @router.get("/indexing/version-stats")
 def get_page_version_stats() -> dict[str, int | float]:
     return page_version_store.stats()
+
+
+@router.get("/indexing/facts", response_model=list[FactVersion])
+def list_fact_versions(
+    status: FactStatus | None = None,
+    source_url: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[FactVersion]:
+    return fact_version_store.list(
+        status=status, source_url=source_url, limit=limit
+    )
+
+
+@router.get("/indexing/knowledge-stats")
+def get_knowledge_stats() -> dict[str, int]:
+    return fact_version_store.stats()
+
+
+@router.get(
+    "/indexing/facts/{fact_key}/history", response_model=list[FactVersion]
+)
+def get_fact_history(fact_key: str) -> list[FactVersion]:
+    history = fact_version_store.history(fact_key)
+    if not history:
+        raise HTTPException(status_code=404, detail="Fact history not found")
+    return history
 
 
 @router.get("/indexing/versions/{version_id}", response_model=PageVersion)

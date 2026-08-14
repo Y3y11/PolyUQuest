@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from agent_rag.config import settings
+from agent_rag.knowledge.delta import KnowledgeDelta
 from agent_rag.versioning.diff import BlockDiffPlan
 
 VersionStatus = Literal["planned", "publishing", "published", "repair_required"]
@@ -38,6 +39,14 @@ class PageVersion(BaseModel):
     reused_block_vectors: int = 0
     blocks_written: int = 0
     blocks_deleted: int = 0
+    knowledge_delta: KnowledgeDelta | None = None
+    extraction_calls: int = 0
+    entity_embeddings: int = 0
+    relation_embeddings: int = 0
+    facts_added: int = 0
+    facts_updated: int = 0
+    facts_retired: int = 0
+    fact_history_applied: bool = False
     error: str | None = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
@@ -87,6 +96,14 @@ class PageVersionStore:
                     reused_block_vectors INTEGER NOT NULL DEFAULT 0,
                     blocks_written INTEGER NOT NULL DEFAULT 0,
                     blocks_deleted INTEGER NOT NULL DEFAULT 0,
+                    knowledge_delta_json TEXT,
+                    extraction_calls INTEGER NOT NULL DEFAULT 0,
+                    entity_embeddings INTEGER NOT NULL DEFAULT 0,
+                    relation_embeddings INTEGER NOT NULL DEFAULT 0,
+                    facts_added INTEGER NOT NULL DEFAULT 0,
+                    facts_updated INTEGER NOT NULL DEFAULT 0,
+                    facts_retired INTEGER NOT NULL DEFAULT 0,
+                    fact_history_applied INTEGER NOT NULL DEFAULT 0,
                     error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -98,6 +115,24 @@ class PageVersionStore:
                 ON page_versions(status, created_at DESC);
                 """
             )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(page_versions)")
+            }
+            migrations = {
+                "knowledge_delta_json": "TEXT",
+                "extraction_calls": "INTEGER NOT NULL DEFAULT 0",
+                "entity_embeddings": "INTEGER NOT NULL DEFAULT 0",
+                "relation_embeddings": "INTEGER NOT NULL DEFAULT 0",
+                "facts_added": "INTEGER NOT NULL DEFAULT 0",
+                "facts_updated": "INTEGER NOT NULL DEFAULT 0",
+                "facts_retired": "INTEGER NOT NULL DEFAULT 0",
+                "fact_history_applied": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, sql_type in migrations.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE page_versions ADD COLUMN {name} {sql_type}"
+                    )
 
     def put_planned(self, version: PageVersion) -> PageVersion:
         with self._connect() as connection:
@@ -107,9 +142,14 @@ class PageVersionStore:
                     version_id, patch_id, observation_id, run_id, source_url,
                     previous_content_hash, content_hash, status, diff_json,
                     page_embeddings, block_embeddings, reused_block_vectors,
-                    blocks_written, blocks_deleted, error, created_at, updated_at,
-                    published_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    blocks_written, blocks_deleted, knowledge_delta_json,
+                    extraction_calls, entity_embeddings, relation_embeddings,
+                    facts_added, facts_updated, facts_retired,
+                    fact_history_applied, error, created_at, updated_at, published_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 self._values(version),
             )
@@ -127,7 +167,10 @@ class PageVersionStore:
                 """
                 UPDATE page_versions SET status=?, page_embeddings=?,
                     block_embeddings=?, reused_block_vectors=?, blocks_written=?,
-                    blocks_deleted=?, error=?, updated_at=?, published_at=?
+                    blocks_deleted=?, knowledge_delta_json=?, extraction_calls=?,
+                    entity_embeddings=?, relation_embeddings=?, facts_added=?,
+                    facts_updated=?, facts_retired=?, fact_history_applied=?,
+                    error=?, updated_at=?, published_at=?
                 WHERE version_id=?
                 """,
                 (
@@ -137,6 +180,17 @@ class PageVersionStore:
                     version.reused_block_vectors,
                     version.blocks_written,
                     version.blocks_deleted,
+                    (
+                        version.knowledge_delta.model_dump_json()
+                        if version.knowledge_delta is not None else None
+                    ),
+                    version.extraction_calls,
+                    version.entity_embeddings,
+                    version.relation_embeddings,
+                    version.facts_added,
+                    version.facts_updated,
+                    version.facts_retired,
+                    int(version.fact_history_applied),
                     version.error,
                     version.updated_at,
                     version.published_at,
@@ -184,9 +238,13 @@ class PageVersionStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT status, diff_json, page_embeddings, block_embeddings, "
-                "reused_block_vectors FROM page_versions"
+                "reused_block_vectors, extraction_calls, entity_embeddings, "
+                "relation_embeddings, facts_added, facts_updated, facts_retired "
+                "FROM page_versions"
             ).fetchall()
         total_new = changed = block_embeds = page_embeds = reused = 0
+        extraction_calls = entity_embeds = relation_embeds = 0
+        facts_added = facts_updated = facts_retired = 0
         published = failed = 0
         for row in rows:
             diff = BlockDiffPlan.model_validate_json(row["diff_json"])
@@ -195,6 +253,12 @@ class PageVersionStore:
             block_embeds += int(row["block_embeddings"])
             page_embeds += int(row["page_embeddings"])
             reused += int(row["reused_block_vectors"])
+            extraction_calls += int(row["extraction_calls"])
+            entity_embeds += int(row["entity_embeddings"])
+            relation_embeds += int(row["relation_embeddings"])
+            facts_added += int(row["facts_added"])
+            facts_updated += int(row["facts_updated"])
+            facts_retired += int(row["facts_retired"])
             published += row["status"] == "published"
             failed += row["status"] == "repair_required"
         total = len(rows)
@@ -210,6 +274,12 @@ class PageVersionStore:
                 round(1 - page_embeds / total, 4) if total else 0.0
             ),
             "relocated_reuse_count": reused,
+            "knowledge_extraction_calls": extraction_calls,
+            "entity_embeddings": entity_embeds,
+            "relation_embeddings": relation_embeds,
+            "facts_added": facts_added,
+            "facts_updated": facts_updated,
+            "facts_retired": facts_retired,
         }
 
     @staticmethod
@@ -220,8 +290,13 @@ class PageVersionStore:
             version.content_hash, version.status, version.diff.model_dump_json(),
             version.page_embeddings, version.block_embeddings,
             version.reused_block_vectors, version.blocks_written,
-            version.blocks_deleted, version.error, version.created_at,
-            version.updated_at, version.published_at,
+            version.blocks_deleted,
+            version.knowledge_delta.model_dump_json() if version.knowledge_delta else None,
+            version.extraction_calls, version.entity_embeddings,
+            version.relation_embeddings, version.facts_added,
+            version.facts_updated, version.facts_retired,
+            int(version.fact_history_applied), version.error,
+            version.created_at, version.updated_at, version.published_at,
         )
 
     @staticmethod
@@ -230,6 +305,10 @@ class PageVersionStore:
             {
                 **dict(row),
                 "diff": json.loads(row["diff_json"]),
+                "knowledge_delta": (
+                    json.loads(row["knowledge_delta_json"])
+                    if row["knowledge_delta_json"] else None
+                ),
             }
         )
 

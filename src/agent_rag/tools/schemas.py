@@ -215,6 +215,12 @@ class PublishPatchOutput(BaseModel):
     page_embeddings: int = 0
     block_embeddings: int = 0
     blocks_reused: int = 0
+    extraction_calls: int = 0
+    entity_embeddings: int = 0
+    relation_embeddings: int = 0
+    facts_added: int = 0
+    facts_updated: int = 0
+    facts_retired: int = 0
     links_written: int = 0
     blocks_deleted: int = 0
     links_deleted: int = 0

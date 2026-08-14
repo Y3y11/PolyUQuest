@@ -357,6 +357,138 @@ class GraphVectorStore:
     def bulk_store_has_topic(self, links: list[dict[str, str]]):
         self.neo4j.bulk_upsert_has_topic(links)
 
+    @staticmethod
+    def _relation_payload(fact: dict[str, Any], build_id: str) -> dict[str, Any]:
+        return {
+            "fact_key": fact["fact_key"],
+            "source_id": fact["source_id"],
+            "source_name": fact.get("source_name", ""),
+            "target_id": fact["target_id"],
+            "target_name": fact.get("target_name", ""),
+            "relation_type": fact.get("relation_type", ""),
+            "description": fact.get("description", ""),
+            "keywords": fact.get("keywords", []),
+            "source_block_ids": fact.get("source_block_ids", []),
+            "last_seen_build_id": build_id,
+        }
+
+    def apply_incremental_knowledge(
+        self,
+        *,
+        delta: Any,
+        entity_vectors: dict[str, list[float]],
+        relation_vectors: dict[str, list[float]],
+        build_id: str,
+        version_id: str,
+        observed_at: str,
+    ) -> None:
+        """Publish current Entity/Relation state and matching vector changes."""
+        entities = list(delta.entities)
+        mentions = [item.model_dump() for item in delta.mentions]
+        facts = [item.model_dump() for item in delta.facts]
+        retired = [item.model_dump() for item in delta.retired_facts]
+        self.neo4j.apply_incremental_knowledge(
+            entities=entities,
+            mentions=mentions,
+            facts=facts,
+            retired_facts=retired,
+            affected_old_block_ids=delta.affected_old_block_ids,
+            relocated_blocks=delta.relocated_blocks,
+            build_id=build_id,
+            version_id=version_id,
+            observed_at=observed_at,
+        )
+
+        entity_profiles = {item["entity_id"]: item for item in entities}
+        for mention in delta.mentions:
+            entity_profiles.setdefault(
+                mention.entity_id,
+                {
+                    "entity_id": mention.entity_id,
+                    "entity_name": mention.entity_name,
+                    "entity_type": mention.entity_type,
+                },
+            )
+        vector_entities = [
+            item
+            for item in entity_profiles.values()
+            if item["entity_id"] in entity_vectors
+        ]
+        if vector_entities:
+            self.qdrant.upsert_points(
+                "entities",
+                ids=[item["entity_id"] for item in vector_entities],
+                vectors=[entity_vectors[item["entity_id"]] for item in vector_entities],
+                payloads=[
+                    {
+                        "entity_id": item["entity_id"],
+                        "entity_name": item.get("entity_name", ""),
+                        "entity_type": item.get("entity_type", ""),
+                        "last_seen_build_id": build_id,
+                    }
+                    for item in vector_entities
+                ],
+            )
+
+        vector_facts = [
+            item for item in facts if item["fact_key"] in relation_vectors
+        ]
+        metadata_facts = [
+            item for item in facts if item["fact_key"] not in relation_vectors
+        ]
+        if vector_facts:
+            self.qdrant.upsert_points(
+                "relations",
+                ids=[item["fact_key"] for item in vector_facts],
+                vectors=[relation_vectors[item["fact_key"]] for item in vector_facts],
+                payloads=[self._relation_payload(item, build_id) for item in vector_facts],
+            )
+        if metadata_facts:
+            self.qdrant.update_payloads(
+                "relations",
+                {
+                    item["fact_key"]: self._relation_payload(item, build_id)
+                    for item in metadata_facts
+                },
+            )
+        self.qdrant.delete_points(
+            "relations", [item["fact_key"] for item in retired]
+        )
+
+    def verify_incremental_knowledge(
+        self, *, delta: Any, required_entity_ids: list[str]
+    ) -> bool:
+        """Read-after-write verification for current graph and vector state."""
+        graph_ok = self.neo4j.verify_incremental_knowledge(
+            mentions=[item.model_dump() for item in delta.mentions],
+            facts=[item.model_dump() for item in delta.facts],
+            retired_facts=[item.model_dump() for item in delta.retired_facts],
+            affected_old_block_ids=delta.affected_old_block_ids,
+            relocated_blocks=delta.relocated_blocks,
+        )
+        entity_vectors = self.qdrant.retrieve_vectors(
+            "entities", required_entity_ids
+        )
+        fact_ids = [item.fact_key for item in delta.facts]
+        fact_vectors = self.qdrant.retrieve_vectors("relations", fact_ids)
+        fact_payloads = self.qdrant.retrieve_payloads("relations", fact_ids)
+        expected_sources = {
+            item.fact_key: sorted(item.source_block_ids) for item in delta.facts
+        }
+        actual_sources = {
+            fact_key: sorted(payload.get("source_block_ids", []))
+            for fact_key, payload in fact_payloads.items()
+        }
+        retired_ids = [item.fact_key for item in delta.retired_facts]
+        retired_vectors = self.qdrant.retrieve_vectors("relations", retired_ids)
+        return (
+            graph_ok
+            and len(entity_vectors) == len(required_entity_ids)
+            and len(fact_vectors) == len(fact_ids)
+            and actual_sources == expected_sources
+            and not retired_vectors
+        )
+
     # ── Touch unchanged pages: refresh last_seen_build_id only ───
 
     def touch_unchanged(self, urls: list[str], build_id: str) -> dict[str, int]:

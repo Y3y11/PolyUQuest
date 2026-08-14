@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from agent_rag.kg.extractor import ExtractedEntityPage, PageExtractionResult
 from agent_rag.tools.graph_patch import PublishPatchTool, StagePatchTool
 from agent_rag.tools.observations import ObservationRecord, ObservationStore, PatchStore
 from agent_rag.tools.schemas import PublishPatchInput, StagePatchInput
@@ -31,11 +32,20 @@ class _FakeNeo4j:
     def update_webpage_lifecycle(self, url, lifecycle):
         self.pages[url].update(lifecycle)
 
+    def find_entities_by_names(self, _candidates):
+        return []
+
+    def get_relations_for_source_blocks(self, _block_ids):
+        return []
+
+    def get_relations_for_candidates(self, _candidates):
+        return []
+
 
 class _FakeQdrant:
     def __init__(self):
         self.vectors: dict[str, dict[str, list[float]]] = {
-            "webpages": {}, "blocks": {}
+            "webpages": {}, "blocks": {}, "entities": {}, "relations": {}
         }
         self.deleted: list[tuple[str, list[str]]] = []
 
@@ -84,6 +94,12 @@ class _FakeGraphStore:
             ]
             current.append(dict(block))
 
+    def apply_incremental_knowledge(self, **_kwargs):
+        pass
+
+    def verify_incremental_knowledge(self, **_kwargs):
+        return True
+
     def close(self):
         pass
 
@@ -123,6 +139,22 @@ class _FakeLifecycleStore:
             (),
             {"model_dump": lambda self: {"status": "active"}},
         )()
+
+
+class _FakeFactStore:
+    def apply(self, **_kwargs):
+        return 0, 0, 0
+
+
+class _FailOnceFactStore:
+    def __init__(self):
+        self.calls = 0
+
+    def apply(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("fact ledger unavailable")
+        return 1, 0, 0
 
 
 class StagePatchTests(unittest.TestCase):
@@ -190,6 +222,8 @@ class PublishPatchTests(unittest.TestCase):
             embedder=lambda texts: [[1.0] for _ in texts],
             lifecycle_store=lifecycle,
             version_store=self.version_store,
+            extractor=lambda *_args, **_kwargs: PageExtractionResult(),
+            fact_store=_FakeFactStore(),
         )
         patch = stage.run(StagePatchInput(observation_id="obs-1", run_id="run-1"))
         return publish, patch, lifecycle
@@ -277,6 +311,8 @@ class PublishPatchTests(unittest.TestCase):
             embedder=embed,
             lifecycle_store=_FakeLifecycleStore(),
             version_store=self.version_store,
+            extractor=lambda *_args, **_kwargs: PageExtractionResult(),
+            fact_store=_FakeFactStore(),
         ).run(PublishPatchInput(patch_id=patch.patch_id))
 
         assert result.block_embeddings == 1
@@ -301,6 +337,119 @@ class PublishPatchTests(unittest.TestCase):
         result = publish.run(PublishPatchInput(patch_id=patch.patch_id))
         assert result.patch.operation == "repair"
         assert result.page_embeddings == 1
+
+    def test_changed_block_is_extracted_once_and_persisted_in_version(self) -> None:
+        graph = _FakeGraphStore()
+        url = "https://www.polyu.edu.hk/study/"
+        graph.neo4j.pages[url] = {
+            "url": url, "content_hash": "old", "title": "Study"
+        }
+        graph.neo4j.blocks[url] = [
+            {"block_id": "new-block", "content": "old evidence"}
+        ]
+        graph.qdrant.vectors["webpages"][url] = [1.0]
+        graph.qdrant.vectors["blocks"]["new-block"] = [1.0]
+        observations = _observation_store(content="Widget X is available")
+        patches = PatchStore()
+        patch = StagePatchTool(observations, patches).run(
+            StagePatchInput(observation_id="obs-1", run_id="run-1")
+        )
+        calls = []
+
+        def extractor(_url, blocks, **_kwargs):
+            calls.append([block["block_id"] for block in blocks])
+            return PageExtractionResult(
+                entities=[
+                    ExtractedEntityPage(
+                        name="Widget X",
+                        type="PRODUCT",
+                        description="Product",
+                        source_block_refs=["new-block"],
+                    )
+                ]
+            )
+
+        result = PublishPatchTool(
+            observations=observations,
+            patches=patches,
+            graph_store_factory=lambda: graph,
+            embedder=lambda texts: [[1.0] for _ in texts],
+            lifecycle_store=_FakeLifecycleStore(),
+            version_store=self.version_store,
+            extractor=extractor,
+            fact_store=_FakeFactStore(),
+        ).run(PublishPatchInput(patch_id=patch.patch_id))
+        assert calls == [["new-block"]]
+        assert result.extraction_calls == 1
+        version = self.version_store.get(result.version_id)
+        assert version is not None
+        assert version.knowledge_delta is not None
+        assert version.knowledge_delta.mentions[0].entity_name == "Widget X"
+
+        # Published patch replay exits before extraction and embedding.
+        replay = PublishPatchTool(
+            observations=observations,
+            patches=patches,
+            graph_store_factory=lambda: graph,
+            embedder=lambda _texts: (_ for _ in ()).throw(AssertionError()),
+            lifecycle_store=_FakeLifecycleStore(),
+            version_store=self.version_store,
+            extractor=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("published replay must not extract")
+            ),
+            fact_store=_FakeFactStore(),
+        ).run(PublishPatchInput(patch_id=patch.patch_id))
+        assert replay.patch.status == "published"
+
+    def test_retry_reuses_persisted_knowledge_delta_after_ledger_failure(self) -> None:
+        graph = _FakeGraphStore()
+        url = "https://www.polyu.edu.hk/study/"
+        graph.neo4j.pages[url] = {
+            "url": url, "content_hash": "old", "title": "Study"
+        }
+        graph.neo4j.blocks[url] = [
+            {"block_id": "new-block", "content": "old evidence"}
+        ]
+        graph.qdrant.vectors["webpages"][url] = [1.0]
+        graph.qdrant.vectors["blocks"]["new-block"] = [1.0]
+        observations = _observation_store(content="Widget X is available")
+        patches = PatchStore()
+        patch = StagePatchTool(observations, patches).run(
+            StagePatchInput(observation_id="obs-1", run_id="run-1")
+        )
+        extraction_calls = 0
+
+        def extractor(*_args, **_kwargs):
+            nonlocal extraction_calls
+            extraction_calls += 1
+            return PageExtractionResult(
+                entities=[
+                    ExtractedEntityPage(
+                        name="Widget X", type="PRODUCT", description="Product",
+                        source_block_refs=["new-block"],
+                    )
+                ]
+            )
+
+        fact_store = _FailOnceFactStore()
+        publisher = PublishPatchTool(
+            observations=observations,
+            patches=patches,
+            graph_store_factory=lambda: graph,
+            embedder=lambda texts: [[1.0] for _ in texts],
+            lifecycle_store=_FakeLifecycleStore(),
+            version_store=self.version_store,
+            extractor=extractor,
+            fact_store=fact_store,
+        )
+        with self.assertRaisesRegex(RuntimeError, "fact ledger unavailable"):
+            publisher.run(PublishPatchInput(patch_id=patch.patch_id))
+        assert patches.get(patch.patch_id).status == "repair_required"
+
+        result = publisher.run(PublishPatchInput(patch_id=patch.patch_id))
+        assert result.patch.status == "published"
+        assert extraction_calls == 1
+        assert fact_store.calls == 2
 
 
 if __name__ == "__main__":
