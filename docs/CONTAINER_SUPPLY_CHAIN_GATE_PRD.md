@@ -1,6 +1,6 @@
 # PolyUQuest 容器制品与供应链门禁 PRD
 
-> 迭代 14 · 2026-08-14 · 状态：实施中
+> 迭代 14 · 2026-08-14 · 状态：已完成并通过 GitHub Linux runner 验收
 
 ## 1. 背景
 
@@ -175,6 +175,15 @@ CI 用 production standalone 镜像启动临时容器：
 6. 不需要仓库 Secret。
 
 本地 daemon 仍不可用时，不把 policy test 代替远端 build；push 后必须检查对应 Actions run，只有远端 job 成功才证明本轮完整验收。
+
+### 实际验收结果
+
+- 首次 run `31788805431` 成功构建两个镜像并通过后端 contract、前端只读 HTTP smoke、SBOM 与报告生成；CRITICAL gate 识别 9 条 fixable finding 并按设计失败，安全 artifact 正常上传；
+- 后端 Debian runtime 的 GnuTLS/OpenSSL、前端 Alpine runtime 的 OpenSSL 通过 OS security upgrade 修复；前端运行镜像删除不参与 `node server.js` 的 npm toolchain，消除其中三份易受攻击的 `node-tar`；
+- 修复 run [`31791005690`](https://github.com/Y3y11/PolyUQuest/actions/runs/31791005690) 的 policy 与 build-contract-scan 均成功，后者用时 17 分 57 秒；
+- 绿色 artifact 中后端 contract 为 `ok=true`、UID 10001、13 项检查全部通过，前端首页证据为 23,220 bytes；
+- 最终报告中后端保留 9 条 HIGH、前端保留 12 条 HIGH，fixable CRITICAL 均为 0；这些 HIGH 是下一阶段 triage/budget 的基线，不应被描述为“没有漏洞”；
+- 本地全量测试为 175 passed + 55 subtests，前端 Vitest/TypeScript/Next production build 通过；本地 Docker daemon 仍不可用，但不再影响本轮 Linux 制品验收结论。
 
 ## 12. 非目标与回滚
 
