@@ -69,6 +69,14 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("worker must use the standalone agent-rag-worker entrypoint")
     api_environment = api.get("environment", {})
     worker_environment = worker.get("environment", {})
+    expected_profile = "${BACKEND_RUNTIME_PROFILE:-remote}"
+    for name, service in (("api", api), ("worker", worker)):
+        environment = service.get("environment", {})
+        build_args = service.get("build", {}).get("args", {})
+        if environment.get("APP_RUNTIME_PROFILE") != expected_profile:
+            errors.append(f"{name}: runtime profile must use BACKEND_RUNTIME_PROFILE")
+        if build_args.get("APP_RUNTIME_PROFILE") != expected_profile:
+            errors.append(f"{name}: image build profile must use BACKEND_RUNTIME_PROFILE")
     if api_environment.get("APP_PROCESS_ROLE") != "api":
         errors.append("api must declare APP_PROCESS_ROLE=api")
     if worker_environment.get("APP_PROCESS_ROLE") != "worker":
@@ -98,6 +106,14 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
             errors.append(f"{dockerfile.name}: non-root USER directive missing")
         if ":latest" in text:
             errors.append(f"{dockerfile.name}: floating latest image is forbidden")
+    backend_dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    for marker in (
+        "ARG APP_RUNTIME_PROFILE=remote",
+        "/app/.runtime-profile",
+        "org.polyuquest.runtime-profile",
+    ):
+        if marker not in backend_dockerfile:
+            errors.append(f"Dockerfile: runtime profile marker missing: {marker}")
 
     return errors
 

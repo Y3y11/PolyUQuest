@@ -35,6 +35,12 @@ on:
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
+    inputs:
+      include_local_ml:
+        description: Build and scan the optional local-ml backend profile
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -87,6 +93,7 @@ jobs:
           load: true
           push: false
           tags: polyuquest-backend:ci-${{ github.sha }}
+          build-args: APP_RUNTIME_PROFILE=remote
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
@@ -115,6 +122,12 @@ jobs:
           printf '%s\n' "$FRONTEND_METADATA" > artifacts/frontend/build-metadata.json
           docker image inspect "polyuquest-backend:ci-${GITHUB_SHA}" > artifacts/backend/image-inspect.json
           docker image inspect "polyuquest-frontend:ci-${GITHUB_SHA}" > artifacts/frontend/image-inspect.json
+          backend_size=$(docker image inspect --format '{{.Size}}' "polyuquest-backend:ci-${GITHUB_SHA}")
+          printf '%s\n' "$backend_size" > artifacts/backend/image-size-bytes.txt
+          if (( backend_size > REMOTE_BACKEND_MAX_SIZE_BYTES )); then
+            echo "remote backend image ${backend_size} exceeds budget ${REMOTE_BACKEND_MAX_SIZE_BYTES}" >&2
+            exit 1
+          fi
 
       - name: Verify backend runtime contract
         run: |
@@ -128,6 +141,23 @@ jobs:
             "polyuquest-backend:ci-${GITHUB_SHA}" \
             "$BACKEND_CONTRACT_COMMAND" \
             > artifacts/backend/container-contract.json
+
+      - name: Verify remote profile rejects local embedding
+        run: |
+          if docker run --rm \
+            --read-only \
+            --user "$CONTAINER_UID_GID" \
+            --env EMBEDDING_PROVIDER=local \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /app/data/runtime:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /app/data/cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /home/app/.cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            "polyuquest-backend:ci-${GITHUB_SHA}" \
+            "$BACKEND_CONTRACT_COMMAND" \
+            > artifacts/backend/local-provider-rejection.json; then
+            echo "remote backend incorrectly accepted EMBEDDING_PROVIDER=local" >&2
+            exit 1
+          fi
 
       - name: Verify frontend read-only startup
         run: |
@@ -209,5 +239,111 @@ jobs:
         with:
           name: container-supply-chain-${{ github.sha }}
           path: artifacts
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  local-ml-contract-scan:
+    if: github.event_name == 'workflow_dispatch' && inputs.include_local_ml
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Export reviewed policy
+        run: |
+          python scripts/validate_supply_chain.py export-env >> "$GITHUB_ENV"
+          mkdir -p artifacts/local-ml
+          echo "gate_started=${GITHUB_SHA}" > artifacts/local-ml/gate-status.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build local-ml backend image
+        id: local-ml-build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: polyuquest-backend-local-ml:ci-${{ github.sha }}
+          build-args: APP_RUNTIME_PROFILE=local-ml
+          cache-from: type=gha,scope=backend-local-ml
+          cache-to: type=gha,mode=max,scope=backend-local-ml
+
+      - name: Record local-ml image evidence
+        env:
+          BUILD_DIGEST: ${{ steps.local-ml-build.outputs.digest }}
+          BUILD_METADATA: ${{ steps.local-ml-build.outputs.metadata }}
+        run: |
+          printf '%s\n' "$BUILD_DIGEST" > artifacts/local-ml/build-digest.txt
+          printf '%s\n' "$BUILD_METADATA" > artifacts/local-ml/build-metadata.json
+          docker image inspect "polyuquest-backend-local-ml:ci-${GITHUB_SHA}" \
+            > artifacts/local-ml/image-inspect.json
+          docker image inspect --format '{{.Size}}' \
+            "polyuquest-backend-local-ml:ci-${GITHUB_SHA}" \
+            > artifacts/local-ml/image-size-bytes.txt
+
+      - name: Verify local-ml runtime contract
+        run: |
+          docker run --rm \
+            --read-only \
+            --user "$CONTAINER_UID_GID" \
+            --env EMBEDDING_PROVIDER=local \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /app/data/runtime:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /app/data/cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /home/app/.cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            "polyuquest-backend-local-ml:ci-${GITHUB_SHA}" \
+            "$BACKEND_CONTRACT_COMMAND" \
+            > artifacts/local-ml/container-contract.json
+
+      - name: Install checksum-verified Trivy
+        run: |
+          archive="$RUNNER_TEMP/trivy.tar.gz"
+          install_dir="$RUNNER_TEMP/trivy-bin"
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$archive"
+          echo "${TRIVY_ARCHIVE_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" trivy
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/trivy" --version > artifacts/local-ml/trivy-version.txt
+
+      - name: Generate local-ml SBOM and vulnerability evidence
+        run: |
+          ignore_unfixed=()
+          if [[ "$TRIVY_IGNORE_UNFIXED" == "true" ]]; then
+            ignore_unfixed+=(--ignore-unfixed)
+          fi
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" \
+            --format cyclonedx --output artifacts/local-ml/sbom.cdx.json \
+            "polyuquest-backend-local-ml:ci-${GITHUB_SHA}"
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_REPORT_SEVERITIES" --format json \
+            --output artifacts/local-ml/vulnerabilities.json \
+            "polyuquest-backend-local-ml:ci-${GITHUB_SHA}"
+
+      - name: Enforce local-ml critical vulnerability gate
+        run: |
+          ignore_unfixed=()
+          if [[ "$TRIVY_IGNORE_UNFIXED" == "true" ]]; then
+            ignore_unfixed+=(--ignore-unfixed)
+          fi
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_BLOCKING_SEVERITIES" --format table --exit-code 1 \
+            "polyuquest-backend-local-ml:ci-${GITHUB_SHA}"
+
+      - name: Upload local-ml evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-ml-supply-chain-${{ github.sha }}
+          path: artifacts/local-ml
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}

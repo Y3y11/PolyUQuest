@@ -4,6 +4,7 @@ import importlib.util
 import shutil
 import tempfile
 import unittest
+from os import environ
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,33 +29,54 @@ class ContainerRuntimeContractTests(unittest.TestCase):
                 return False, "PermissionError"
             return True, "write_succeeded"
 
+        def find_spec(module: str):
+            if module in {"sentence_transformers", "torch", "FlagEmbedding"}:
+                return None
+            return object()
+
         with (
+            patch.dict(
+                environ,
+                {"APP_RUNTIME_PROFILE": "remote", "EMBEDDING_PROVIDER": "siliconflow"},
+            ),
             patch.object(container_contract, "_current_uid", return_value=10001),
             patch.object(container_contract.Path, "exists", return_value=True),
+            patch.object(container_contract.Path, "read_text", return_value="remote"),
             patch.object(
                 container_contract.shutil,
                 "which",
                 side_effect=lambda name: f"/bin/{name}",
             ),
-            patch.object(container_contract.importlib.util, "find_spec", return_value=object()),
+            patch.object(container_contract.importlib.util, "find_spec", side_effect=find_spec),
             patch.object(container_contract, "_probe_writable", side_effect=writable_probe),
         ):
             report = container_contract.evaluate_container_contract()
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["uid"], 10001)
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["runtime_profile"]["effective"], "remote")
         self.assertTrue(all(check["ok"] for check in report["checks"]))
 
     def test_contract_fails_for_root_missing_command_and_writable_app_root(self) -> None:
         def writable_probe(path: Path) -> tuple[bool, str]:
             return True, "write_succeeded"
 
+        def find_spec(module: str):
+            if module in {"sentence_transformers", "torch", "FlagEmbedding"}:
+                return None
+            return object()
+
         with (
+            patch.dict(
+                environ,
+                {"APP_RUNTIME_PROFILE": "remote", "EMBEDDING_PROVIDER": "siliconflow"},
+            ),
             patch.object(container_contract, "_current_uid", return_value=0),
             patch.object(container_contract.Path, "exists", return_value=True),
+            patch.object(container_contract.Path, "read_text", return_value="remote"),
             patch.object(container_contract.shutil, "which", return_value=None),
-            patch.object(container_contract.importlib.util, "find_spec", return_value=object()),
+            patch.object(container_contract.importlib.util, "find_spec", side_effect=find_spec),
             patch.object(container_contract, "_probe_writable", side_effect=writable_probe),
         ):
             report = container_contract.evaluate_container_contract()
@@ -83,6 +105,7 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertEqual(exported["TRIVY_BLOCKING_SEVERITIES"], "CRITICAL")
         self.assertEqual(exported["CONTAINER_UID_GID"], "10001:10001")
         self.assertEqual(exported["TRIVY_IGNORE_UNFIXED"], "true")
+        self.assertEqual(exported["REMOTE_BACKEND_MAX_SIZE_BYTES"], "1500000000")
 
     def test_validator_rejects_floating_or_unapproved_action(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -136,6 +159,21 @@ class SupplyChainPolicyTests(unittest.TestCase):
             )
 
         self.assertIn("Dockerfile: runtime OS security upgrade is missing", errors)
+
+    def test_validator_rejects_local_ml_as_core_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pyproject = ROOT / "pyproject.toml"
+            text = pyproject.read_text(encoding="utf-8").replace(
+                'dependencies = [\n',
+                'dependencies = [\n    "sentence-transformers>=3.3",\n',
+                1,
+            )
+            (root / "pyproject.toml").write_text(text, encoding="utf-8")
+
+            errors = self.validator.validate_dependency_profiles(root)
+
+        self.assertIn("sentence-transformers must not be a core dependency", errors)
 
 
 if __name__ == "__main__":

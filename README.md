@@ -80,6 +80,16 @@ agent-rag-serve
 ```
 </details>
 
+The default dependency set is the lightweight remote-inference profile. If
+`EMBEDDING_PROVIDER=local`, install the explicit local ML capability instead:
+
+```bash
+uv sync --locked --extra local-ml
+```
+
+`FlagEmbedding` is not installed by either serving profile because the online
+code does not import it; local BGE-M3 embedding uses Sentence Transformers.
+
 ### 4. Run the frontend (Next.js)
 
 ```bash
@@ -102,6 +112,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
 | Concern | File |
 |---|---|
 | API keys / DB password / CORS | `.env` (template in `.env.example`) |
+| Runtime capability (`auto`, `remote`, `local-ml`) | `APP_RUNTIME_PROFILE` / `BACKEND_RUNTIME_PROFILE` |
 | Per-stage LLM model + temperature | `configs/llm.yaml` |
 | Router confidence cutoffs, retrieval thresholds | `configs/thresholds.yaml` |
 | Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
@@ -291,6 +302,17 @@ Neo4j and Qdrant remain on an internal network. Production configuration fails
 fast on anonymous auth, a default graph password, reload mode, or missing
 credentials for the selected remote model provider.
 
+Production defaults to the `remote` backend profile: the full Agent, graph,
+vector, crawler, indexing, and audit stack remains available, while local
+Torch/Sentence Transformers are excluded. A `local-ml` build is available for
+self-hosted embedding. The image contains an immutable profile marker, so a
+deployment cannot enable local embedding merely by relabeling a remote image.
+
+```bash
+docker build --build-arg APP_RUNTIME_PROFILE=remote -t polyuquest-backend:remote .
+docker build --build-arg APP_RUNTIME_PROFILE=local-ml -t polyuquest-backend:local-ml .
+```
+
 ```bash
 python scripts/validate_deployment.py
 docker compose --env-file deploy/.env.production -f compose.production.yml config --quiet
@@ -323,6 +345,12 @@ See [`docs/CONTAINER_SUPPLY_CHAIN_GATE_PRD.md`](docs/CONTAINER_SUPPLY_CHAIN_GATE
 and [`docs/CONTAINER_SUPPLY_CHAIN_RUNBOOK.md`](docs/CONTAINER_SUPPLY_CHAIN_RUNBOOK.md)
 for the evidence contract, vulnerability policy, upgrade procedure, and current
 boundaries.
+
+Runtime profile selection, local development migration, negative contract
+checks, and the manual local-ml supply-chain gate are documented in
+[`docs/RUNTIME_PROFILE_IMAGE_OPTIMIZATION_PRD.md`](docs/RUNTIME_PROFILE_IMAGE_OPTIMIZATION_PRD.md)
+and
+[`docs/RUNTIME_PROFILE_IMAGE_OPTIMIZATION_RUNBOOK.md`](docs/RUNTIME_PROFILE_IMAGE_OPTIMIZATION_RUNBOOK.md).
 
 ---
 

@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +51,8 @@ def _severity_set(value: Any) -> set[str]:
 def validate_policy(policy: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
-    if policy.get("schema_version") != 1:
-        errors.append("schema_version must be 1")
+    if policy.get("schema_version") != 2:
+        errors.append("schema_version must be 2")
 
     try:
         version = _nested(policy, "trivy", "version")
@@ -125,6 +126,30 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
             if not isinstance(commit, str) or not COMMIT_PATTERN.fullmatch(commit):
                 errors.append(f"action {action} must be pinned to a full commit SHA")
 
+    try:
+        remote = _nested(policy, "profiles", "remote")
+        local_ml = _nested(policy, "profiles", "local_ml")
+        if remote.get("build_arg") != "remote":
+            errors.append("profiles.remote.build_arg must be remote")
+        max_size = remote.get("max_image_size_bytes")
+        if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+            errors.append("profiles.remote.max_image_size_bytes must be a positive integer")
+        if remote.get("forbidden_modules") != [
+            "sentence_transformers",
+            "torch",
+            "FlagEmbedding",
+        ]:
+            errors.append("profiles.remote.forbidden_modules must match the runtime contract")
+        if local_ml.get("build_arg") != "local-ml":
+            errors.append("profiles.local_ml.build_arg must be local-ml")
+        if local_ml.get("required_modules") != ["sentence_transformers", "torch"]:
+            errors.append("profiles.local_ml.required_modules must match the runtime contract")
+        if local_ml.get("forbidden_modules") != ["FlagEmbedding"]:
+            errors.append("profiles.local_ml.forbidden_modules must reject FlagEmbedding")
+    except (KeyError, AttributeError) as exc:
+        detail = exc.args[0] if exc.args else "profiles"
+        errors.append(f"invalid profile policy: {detail}")
+
     return errors
 
 
@@ -181,6 +206,10 @@ def validate_workflows(root: Path, policy: dict[str, Any]) -> list[str]:
         "--exit-code 1": "blocking vulnerability scan is missing",
         "sha256sum --check --strict": "scanner archive checksum verification is missing",
         "$TRIVY_IGNORE_UNFIXED": "ignore-unfixed must be driven by reviewed policy",
+        "APP_RUNTIME_PROFILE=remote": "automatic backend build must use remote profile",
+        "${REMOTE_BACKEND_MAX_SIZE_BYTES}": "remote image size budget is missing",
+        "include_local_ml": "manual local-ml workflow input is missing",
+        "APP_RUNTIME_PROFILE=local-ml": "manual local-ml build is missing",
         "if: always()": "evidence must upload even when a gate fails",
     }
     for fragment, message in required_fragments.items():
@@ -213,6 +242,14 @@ def validate_dockerfiles(root: Path, policy: dict[str, Any]) -> list[str]:
         backend = backend_path.read_text(encoding="utf-8")
         if "apt-get upgrade -y" not in backend:
             errors.append("Dockerfile: runtime OS security upgrade is missing")
+        for fragment in (
+            "ARG APP_RUNTIME_PROFILE=remote",
+            "--extra local-ml",
+            "/app/.runtime-profile",
+            "org.polyuquest.runtime-profile",
+        ):
+            if fragment not in backend:
+                errors.append(f"Dockerfile: runtime profile contract missing: {fragment}")
 
     frontend_path = root / "frontend" / "Dockerfile"
     if frontend_path.is_file():
@@ -221,6 +258,26 @@ def validate_dockerfiles(root: Path, policy: dict[str, Any]) -> list[str]:
             errors.append("frontend/Dockerfile: runtime OS security upgrade is missing")
         if "rm -rf /usr/local/lib/node_modules/npm" not in frontend:
             errors.append("frontend/Dockerfile: unused runtime npm toolchain must be removed")
+    return errors
+
+
+def validate_dependency_profiles(root: Path) -> list[str]:
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return ["pyproject.toml is missing"]
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    project = payload.get("project", {})
+    core = [str(item).lower() for item in project.get("dependencies", [])]
+    extras = project.get("optional-dependencies", {})
+    local_ml = [str(item).lower() for item in extras.get("local-ml", [])]
+    all_declared = [*core, *(str(item).lower() for values in extras.values() for item in values)]
+    errors: list[str] = []
+    if any(item.startswith("sentence-transformers") for item in core):
+        errors.append("sentence-transformers must not be a core dependency")
+    if not any(item.startswith("sentence-transformers") for item in local_ml):
+        errors.append("local-ml extra must install sentence-transformers")
+    if any(item.startswith("flagembedding") for item in all_declared):
+        errors.append("unused FlagEmbedding dependency is forbidden in all profiles")
     return errors
 
 
@@ -233,6 +290,7 @@ def validate_repository(root: Path) -> list[str]:
         *validate_policy(policy),
         *validate_workflows(root, policy),
         *validate_dockerfiles(root, policy),
+        *validate_dependency_profiles(root),
     ]
 
 
@@ -246,6 +304,8 @@ def export_environment(policy: dict[str, Any]) -> list[str]:
         f"TRIVY_IGNORE_UNFIXED={str(ignore_unfixed).lower()}",
         f"CONTAINER_UID_GID={_nested(policy, 'contract', 'uid_gid')}",
         f"BACKEND_CONTRACT_COMMAND={_nested(policy, 'contract', 'backend_command')}",
+        "REMOTE_BACKEND_MAX_SIZE_BYTES="
+        f"{_nested(policy, 'profiles', 'remote', 'max_image_size_bytes')}",
         f"ARTIFACT_RETENTION_DAYS={_nested(policy, 'artifacts', 'retention_days')}",
     ]
 

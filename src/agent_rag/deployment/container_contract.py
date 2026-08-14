@@ -7,9 +7,16 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-SCHEMA_VERSION = 1
+from agent_rag.deployment.runtime_profile import (
+    KNOWN_PROFILES,
+    RuntimeProfile,
+    inspect_runtime_capabilities,
+    validate_runtime_capabilities,
+)
+
+SCHEMA_VERSION = 2
 EXPECTED_UID = 10001
 EXPECTED_COMMANDS = (
     "agent-rag-serve",
@@ -53,6 +60,42 @@ def evaluate_container_contract(
     uid = _current_uid()
     record("non_root_uid", uid == expected_uid, f"uid={uid};expected={expected_uid}")
 
+    declared_raw = os.environ.get("APP_RUNTIME_PROFILE", "auto")
+    embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "siliconflow")
+    profile_details: dict[str, Any] = {
+        "declared": declared_raw,
+        "marker": None,
+        "effective": None,
+        "embedding_provider": embedding_provider,
+    }
+    if declared_raw not in {*KNOWN_PROFILES, "auto"}:
+        record("runtime_profile", False, f"invalid_declared_profile={declared_raw}")
+    else:
+        try:
+            capabilities = inspect_runtime_capabilities(
+                declared_profile=cast(RuntimeProfile, declared_raw),
+                marker_path=app_root / ".runtime-profile",
+            )
+            profile_details.update(
+                marker=capabilities.marker_profile,
+                effective=capabilities.effective_profile,
+                local_ml_available=capabilities.local_ml_available,
+                torch_available=capabilities.torch_available,
+                flag_embedding_available=capabilities.flag_embedding_available,
+            )
+            validate_runtime_capabilities(
+                declared_profile=cast(RuntimeProfile, declared_raw),
+                embedding_provider=embedding_provider,
+                marker_path=app_root / ".runtime-profile",
+            )
+            record(
+                "runtime_profile",
+                capabilities.marker_profile is not None,
+                f"effective={capabilities.effective_profile}",
+            )
+        except ValueError as exc:
+            record("runtime_profile", False, str(exc))
+
     required_paths = (
         app_root / "src" / "agent_rag",
         app_root / "configs",
@@ -85,6 +128,7 @@ def evaluate_container_contract(
         "schema_version": SCHEMA_VERSION,
         "ok": all(check["ok"] for check in checks),
         "uid": uid,
+        "runtime_profile": profile_details,
         "checks": checks,
     }
 

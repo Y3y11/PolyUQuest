@@ -15,8 +15,6 @@ dependencies = [
     "playwright>=1.48",
     "neo4j>=5.25",
     "qdrant-client>=1.12",
-    "sentence-transformers>=3.3",
-    "FlagEmbedding>=1.2",
     "openai>=1.55",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -34,6 +32,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+local-ml = [
+    "sentence-transformers>=3.3",
+]
 dev = [
     "ruff>=0.8",
     "mypy>=1.13",

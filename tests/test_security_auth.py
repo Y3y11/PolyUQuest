@@ -52,6 +52,7 @@ class SecurityConfigurationTests(unittest.TestCase):
         settings = Settings(
             _env_file=None,
             app_environment="production",
+            app_runtime_profile="local-ml",
             api_auth_mode="api_key",
             api_auth_keys=_records(),
             neo4j_password="production-only-password",

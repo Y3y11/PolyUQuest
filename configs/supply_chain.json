@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "trivy": {
     "version": "0.72.0",
     "linux_amd64_archive_sha256": "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea",
@@ -10,6 +10,27 @@
   "contract": {
     "uid_gid": "10001:10001",
     "backend_command": "agent-rag-container-check"
+  },
+  "profiles": {
+    "remote": {
+      "build_arg": "remote",
+      "max_image_size_bytes": 1500000000,
+      "forbidden_modules": [
+        "sentence_transformers",
+        "torch",
+        "FlagEmbedding"
+      ]
+    },
+    "local_ml": {
+      "build_arg": "local-ml",
+      "required_modules": [
+        "sentence_transformers",
+        "torch"
+      ],
+      "forbidden_modules": [
+        "FlagEmbedding"
+      ]
+    }
   },
   "artifacts": {
     "retention_days": 14

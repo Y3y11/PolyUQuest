@@ -5,6 +5,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -33,10 +34,21 @@ def _production_settings(**overrides):
         "neo4j_password": "non-default-production-password",
         "llm_provider": "deepseek",
         "deepseek_api_key": "deepseek-test-key",
-        "embedding_provider": "local",
+        "app_runtime_profile": "remote",
+        "embedding_provider": "siliconflow",
+        "siliconflow_api_key": "siliconflow-test-key",
     }
     values.update(overrides)
-    return Settings(**values)
+    module_state = {
+        "sentence_transformers": False,
+        "torch": False,
+        "FlagEmbedding": False,
+    }
+    with patch(
+        "agent_rag.deployment.runtime_profile._module_available",
+        side_effect=lambda module: module_state[module],
+    ):
+        return Settings(**values)
 
 
 class ProductionConfigurationTests(unittest.TestCase):
@@ -80,6 +92,10 @@ class ProductionConfigurationTests(unittest.TestCase):
     def test_shutdown_grace_must_be_positive(self) -> None:
         with self.assertRaisesRegex(ValidationError, "WORKER_SHUTDOWN_GRACE_SECONDS"):
             Settings(_env_file=None, worker_shutdown_grace_seconds=0)
+
+    def test_production_requires_explicit_runtime_profile(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "explicit APP_RUNTIME_PROFILE"):
+            _production_settings(app_runtime_profile="auto")
 
 
 class WorkerShutdownTests(unittest.IsolatedAsyncioTestCase):

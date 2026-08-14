@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # Deployment and API security boundary
     app_environment: Literal["development", "test", "production"] = "development"
     app_process_role: Literal["api", "worker"] = "api"
+    app_runtime_profile: Literal["auto", "remote", "local-ml"] = "auto"
     api_auth_mode: Literal["disabled", "api_key"] = "disabled"
     # Comma-separated key_id:role:sha256 entries. Raw keys never belong here.
     api_auth_keys: str = ""
@@ -144,6 +145,13 @@ class Settings(BaseSettings):
         origins = self.cors_origins_list
         regex = self.cors_allow_origin_regex.strip()
 
+        from agent_rag.deployment.runtime_profile import validate_runtime_capabilities
+
+        validate_runtime_capabilities(
+            declared_profile=self.app_runtime_profile,
+            embedding_provider=self.embedding_provider,
+        )
+
         if self.index_worker_enabled and not self.agent_async_indexing:
             raise ValueError(
                 "INDEX_WORKER_ENABLED=true requires AGENT_ASYNC_INDEXING=true"
@@ -169,6 +177,10 @@ class Settings(BaseSettings):
                 "API_AUTH_MODE=disabled is not allowed in APP_ENVIRONMENT=production"
             )
         if self.app_environment == "production":
+            if self.app_runtime_profile == "auto":
+                raise ValueError(
+                    "production requires explicit APP_RUNTIME_PROFILE=remote or local-ml"
+                )
             if self.api_reload:
                 raise ValueError("API_RELOAD=true is not allowed in production")
             if not self.neo4j_password or self.neo4j_password == "agent_rag_polyu":
