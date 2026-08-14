@@ -18,7 +18,11 @@ from agent_rag.agent.frontier import FrontierSelector
 from agent_rag.agent.orchestrator import QueryDrivenAgent
 from agent_rag.agent.schemas import AgentBudget, AgentQueryRequest
 from agent_rag.config import crawl_config, settings
-from agent_rag.e2e.contract import BusinessE2EReport, ContractRecorder
+from agent_rag.e2e.contract import (
+    BusinessE2EReport,
+    ContractRecorder,
+    compare_reused_block_vectors,
+)
 from agent_rag.e2e.deterministic import (
     DeterministicAnswerComposer,
     DeterministicEmbedder,
@@ -595,12 +599,14 @@ class BusinessE2EScenario:
                         consistency_after = graph.check_consistency()
                     finally:
                         graph.close()
-                    stable_ids = sorted(
-                        set(update_version.diff.unchanged_ids) & set(vectors_before)
-                    )
-                    stable_vectors_equal = all(
-                        vectors_before[item] == vectors_after.get(item)
-                        for item in stable_ids
+                    vector_reuse = compare_reused_block_vectors(
+                        unchanged_ids=update_version.diff.unchanged_ids,
+                        relocated_pairs=[
+                            (item.old_id, item.new_id)
+                            for item in update_version.diff.relocated
+                        ],
+                        vectors_before=vectors_before,
+                        vectors_after=vectors_after,
                     )
                     fact_stats = restarted.facts.stats()
                     embedding_after_update = self.embedder.snapshot()
@@ -611,8 +617,10 @@ class BusinessE2EScenario:
                             "new_blocks": update_version.diff.new_count,
                             "modified_blocks": len(update_version.diff.modified_ids),
                             "unchanged_blocks": len(update_version.diff.unchanged_ids),
+                            "relocated_blocks": len(update_version.diff.relocated),
                             "block_embeddings": update_version.block_embeddings,
-                            "stable_vectors_equal": stable_vectors_equal,
+                            "reused_block_vectors": update_version.reused_block_vectors,
+                            "vector_reuse": vector_reuse,
                             "fact_stats": fact_stats,
                             "consistency": consistency_after,
                             "embedding_delta": {
@@ -625,15 +633,19 @@ class BusinessE2EScenario:
                     self.report.audit_ids["update_version"] = update_version.version_id
                     self.recorder.check(
                         "incremental_update.stable_vectors_reused",
-                        len(stable_ids)
+                        int(vector_reuse["candidate_count"])
                         >= int(contract.get("min_stable_blocks_after_update", 1))
-                        and stable_vectors_equal
+                        and bool(vector_reuse["equal"])
+                        and update_version.reused_block_vectors
+                        >= int(vector_reuse["relocated_count"])
                         and update_version.block_embeddings
                         < update_version.diff.new_count,
                         expected="stable vector unchanged and partial block embedding",
                         actual={
-                            "stable_ids": len(stable_ids),
-                            "equal": stable_vectors_equal,
+                            **vector_reuse,
+                            "persisted_reuse_count": (
+                                update_version.reused_block_vectors
+                            ),
                             "embedded": update_version.block_embeddings,
                             "new_count": update_version.diff.new_count,
                         },

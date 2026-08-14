@@ -6,7 +6,11 @@ from pathlib import Path
 import yaml
 
 from agent_rag.config import crawl_config
-from agent_rag.e2e.contract import BusinessE2EReport, ContractRecorder
+from agent_rag.e2e.contract import (
+    BusinessE2EReport,
+    ContractRecorder,
+    compare_reused_block_vectors,
+)
 from agent_rag.e2e.deterministic import (
     DeterministicEmbedder,
     DeterministicKnowledgeExtractor,
@@ -141,6 +145,28 @@ def test_report_is_atomic_machine_readable_and_redacts_secrets(tmp_path: Path) -
     assert "secret-token-value" not in loaded.error
     assert "[REDACTED]" in loaded.error
     assert not path.with_suffix(".json.tmp").exists()
+
+
+def test_vector_reuse_contract_includes_relocated_blocks() -> None:
+    evidence = compare_reused_block_vectors(
+        unchanged_ids=["stable"],
+        relocated_pairs=[("old-location", "new-location")],
+        vectors_before={
+            "stable": [0.1, 0.2],
+            "old-location": [0.3, 0.4],
+        },
+        vectors_after={
+            "stable": [0.1, 0.2],
+            "new-location": [0.3, 0.4],
+        },
+    )
+
+    assert evidence == {
+        "same_id_count": 1,
+        "relocated_count": 1,
+        "candidate_count": 2,
+        "equal": True,
+    }
 
 
 def test_config_and_workflow_encode_real_store_gate() -> None:

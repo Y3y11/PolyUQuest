@@ -81,7 +81,7 @@ PolyUQuest 最初解决的是机构网站 HTML 被扁平化后，页面层级、
 更新发布后必须满足：
 
 - 页面版本为 `published`；
-- 至少一个稳定 Block ID 与向量保持不变；
+- 至少一个稳定语义 Block 通过 same-ID 或 `relocated(old_id → new_id)` 映射复用向量，映射前后向量保持不变；
 - `block_embeddings < new_count`，证明没有全页重算；
 - 旧审批关系进入 retired 历史，新审批关系成为 active；
 - Neo4j Block/Entity 和 Qdrant Block/Entity 集合一致。
@@ -178,7 +178,7 @@ Workflow 对 E2E、Agent、工具、索引、刷新、存储、版本、知识�
 | Read-after-write | WebPage/Blocks/Entities/Facts 与向量存在 |
 | 热查询 | 第二次抓取 0 页、Origin 请求增量 0 |
 | 页面更新 | Freshness Worker 生成新 content hash 与 Job |
-| 局部更新 | 至少 1 个稳定向量相同，embedding 数小于新 Block 数 |
+| 局部更新 | 至少 1 个 same-ID/relocated 稳定向量相同，持久化 reuse 计数匹配，embedding 数小于新 Block 数 |
 | 事实时态 | 旧关系 retired，新关系 active |
 | 一致性 | Block/Entity 跨存储 ID 一致 |
 | 幂等 | 重放前后 inventory 与事实计数相同 |

@@ -69,6 +69,36 @@ class ContractViolationError(RuntimeError):
     """Raised when a failed prerequisite makes later checks meaningless."""
 
 
+def compare_reused_block_vectors(
+    *,
+    unchanged_ids: list[str],
+    relocated_pairs: list[tuple[str, str]],
+    vectors_before: dict[str, list[float]],
+    vectors_after: dict[str, list[float]],
+) -> dict[str, int | bool]:
+    """Prove vector reuse across both stable-ID and relocated DOM blocks."""
+    same_id_pairs = [
+        (block_id, block_id)
+        for block_id in unchanged_ids
+        if block_id in vectors_before and block_id in vectors_after
+    ]
+    relocated_vector_pairs = [
+        (old_id, new_id)
+        for old_id, new_id in relocated_pairs
+        if old_id in vectors_before and new_id in vectors_after
+    ]
+    candidates = [*same_id_pairs, *relocated_vector_pairs]
+    return {
+        "same_id_count": len(same_id_pairs),
+        "relocated_count": len(relocated_vector_pairs),
+        "candidate_count": len(candidates),
+        "equal": all(
+            vectors_before[old_id] == vectors_after[new_id]
+            for old_id, new_id in candidates
+        ),
+    }
+
+
 class ContractRecorder:
     def __init__(self, report: BusinessE2EReport):
         self.report = report
