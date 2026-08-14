@@ -304,6 +304,26 @@ an explicit destructive confirmation before restore. See
 and
 [`docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md`](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md).
 
+### Container supply-chain gate
+
+Container-affecting pushes and pull requests build both Linux images with
+BuildKit, run the backend contract and frontend HTTP smoke as UID/GID
+`10001:10001` on a read-only root filesystem, and generate CycloneDX SBOM plus
+HIGH/CRITICAL vulnerability evidence. Fixable CRITICAL findings fail the gate.
+Remote GitHub Actions and the Trivy release archive are pinned by immutable
+commit/checksum policy in `configs/supply_chain.json`.
+
+Run the dependency-free policy check locally with:
+
+```bash
+python scripts/validate_supply_chain.py validate
+```
+
+See [`docs/CONTAINER_SUPPLY_CHAIN_GATE_PRD.md`](docs/CONTAINER_SUPPLY_CHAIN_GATE_PRD.md)
+and [`docs/CONTAINER_SUPPLY_CHAIN_RUNBOOK.md`](docs/CONTAINER_SUPPLY_CHAIN_RUNBOOK.md)
+for the evidence contract, vulnerability policy, upgrade procedure, and current
+boundaries.
+
 ---
 
 ## Note on data

@@ -1,0 +1,213 @@
+name: Container Supply Chain Gate
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/container-supply-chain-gate.yml"
+      - ".github/workflows/evaluation-gate.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "compose.production.yml"
+      - "frontend/**"
+      - "src/**"
+      - "configs/**"
+      - "data/**"
+      - "scripts/validate_supply_chain.py"
+      - "tests/test_container_supply_chain.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/container-supply-chain-gate.yml"
+      - ".github/workflows/evaluation-gate.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "compose.production.yml"
+      - "frontend/**"
+      - "src/**"
+      - "configs/**"
+      - "data/**"
+      - "scripts/validate_supply_chain.py"
+      - "tests/test_container_supply_chain.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate immutable supply-chain policy
+        run: python scripts/validate_supply_chain.py validate
+
+  build-contract-scan:
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Export reviewed policy
+        run: |
+          python scripts/validate_supply_chain.py export-env >> "$GITHUB_ENV"
+          mkdir -p artifacts/backend artifacts/frontend
+          echo "gate_started=${GITHUB_SHA}" > artifacts/gate-status.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Record BuildKit version
+        run: docker buildx version | tee artifacts/buildx-version.txt
+
+      - name: Build backend image
+        id: backend-build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: polyuquest-backend:ci-${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        id: frontend-build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          load: true
+          push: false
+          tags: polyuquest-frontend:ci-${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Record immutable image evidence
+        env:
+          BACKEND_DIGEST: ${{ steps.backend-build.outputs.digest }}
+          BACKEND_METADATA: ${{ steps.backend-build.outputs.metadata }}
+          FRONTEND_DIGEST: ${{ steps.frontend-build.outputs.digest }}
+          FRONTEND_METADATA: ${{ steps.frontend-build.outputs.metadata }}
+        run: |
+          printf '%s\n' "$BACKEND_DIGEST" > artifacts/backend/build-digest.txt
+          printf '%s\n' "$BACKEND_METADATA" > artifacts/backend/build-metadata.json
+          printf '%s\n' "$FRONTEND_DIGEST" > artifacts/frontend/build-digest.txt
+          printf '%s\n' "$FRONTEND_METADATA" > artifacts/frontend/build-metadata.json
+          docker image inspect "polyuquest-backend:ci-${GITHUB_SHA}" > artifacts/backend/image-inspect.json
+          docker image inspect "polyuquest-frontend:ci-${GITHUB_SHA}" > artifacts/frontend/image-inspect.json
+
+      - name: Verify backend runtime contract
+        run: |
+          docker run --rm \
+            --read-only \
+            --user "$CONTAINER_UID_GID" \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /app/data/runtime:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /app/data/cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            --tmpfs /home/app/.cache:rw,noexec,nosuid,size=64m,uid=10001,gid=10001 \
+            "polyuquest-backend:ci-${GITHUB_SHA}" \
+            "$BACKEND_CONTRACT_COMMAND" \
+            > artifacts/backend/container-contract.json
+
+      - name: Verify frontend read-only startup
+        run: |
+          cleanup() {
+            docker logs polyuquest-frontend-smoke > artifacts/frontend/container.log 2>&1 || true
+            docker rm -f polyuquest-frontend-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d \
+            --name polyuquest-frontend-smoke \
+            --read-only \
+            --user "$CONTAINER_UID_GID" \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            -p 127.0.0.1:3000:3000 \
+            "polyuquest-frontend:ci-${GITHUB_SHA}"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/ \
+              --output artifacts/frontend/index.html; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "frontend did not become ready" >&2
+          exit 1
+
+      - name: Install checksum-verified Trivy
+        run: |
+          archive="$RUNNER_TEMP/trivy.tar.gz"
+          install_dir="$RUNNER_TEMP/trivy-bin"
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$archive"
+          echo "${TRIVY_ARCHIVE_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" trivy
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/trivy" --version | tee artifacts/trivy-version.txt
+
+      - name: Generate CycloneDX SBOMs
+        run: |
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" \
+            --format cyclonedx --output artifacts/backend/sbom.cdx.json \
+            "polyuquest-backend:ci-${GITHUB_SHA}"
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" \
+            --format cyclonedx --output artifacts/frontend/sbom.cdx.json \
+            "polyuquest-frontend:ci-${GITHUB_SHA}"
+
+      - name: Generate vulnerability evidence
+        run: |
+          ignore_unfixed=()
+          if [[ "$TRIVY_IGNORE_UNFIXED" == "true" ]]; then
+            ignore_unfixed+=(--ignore-unfixed)
+          fi
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_REPORT_SEVERITIES" --format json \
+            --output artifacts/backend/vulnerabilities.json \
+            "polyuquest-backend:ci-${GITHUB_SHA}"
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_REPORT_SEVERITIES" --format json \
+            --output artifacts/frontend/vulnerabilities.json \
+            "polyuquest-frontend:ci-${GITHUB_SHA}"
+
+      - name: Enforce fixable critical vulnerability gate
+        run: |
+          ignore_unfixed=()
+          if [[ "$TRIVY_IGNORE_UNFIXED" == "true" ]]; then
+            ignore_unfixed+=(--ignore-unfixed)
+          fi
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_BLOCKING_SEVERITIES" --format table --exit-code 1 \
+            "polyuquest-backend:ci-${GITHUB_SHA}"
+          trivy image --cache-dir "$RUNNER_TEMP/trivy-cache" "${ignore_unfixed[@]}" \
+            --severity "$TRIVY_BLOCKING_SEVERITIES" --format table --exit-code 1 \
+            "polyuquest-frontend:ci-${GITHUB_SHA}"
+
+      - name: Upload build and security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-supply-chain-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}

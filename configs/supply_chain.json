@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "trivy": {
+    "version": "0.72.0",
+    "linux_amd64_archive_sha256": "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea",
+    "blocking_severities": "CRITICAL",
+    "report_severities": "HIGH,CRITICAL",
+    "ignore_unfixed": true
+  },
+  "contract": {
+    "uid_gid": "10001:10001",
+    "backend_command": "agent-rag-container-check"
+  },
+  "artifacts": {
+    "retention_days": 14
+  },
+  "actions": {
+    "actions/checkout": "de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "astral-sh/setup-uv": "c771a70e6277c0a99b617c7a806ffedaca235ff9",
+    "docker/setup-buildx-action": "4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd",
+    "docker/build-push-action": "f9f3042f7e2789586610d6e8b85c8f03e5195baf"
+  }
+}
