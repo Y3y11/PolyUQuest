@@ -1441,6 +1441,80 @@ class Neo4jStore:
         with self._driver.session() as session:
             return {r["eid"] for r in session.run(query)}
 
+    def get_reconciliation_snapshot(self) -> dict[str, Any]:
+        """Read identities, provenance hints, and current facts for governance."""
+        node_queries = {
+            "webpages": (
+                "MATCH (n:WebPage) RETURN n.url AS id, "
+                "coalesce(n.patch_id, '') AS patch_id, "
+                "coalesce(n.last_seen_build_id, '') AS build_id, "
+                "coalesce(n.url, '') AS source_url, "
+                "coalesce(n.title, '') <> '' OR "
+                "coalesce(n.meta_description, '') <> '' AS vector_expected"
+            ),
+            "blocks": (
+                "MATCH (n:Block) RETURN n.block_id AS id, "
+                "coalesce(n.patch_id, '') AS patch_id, "
+                "coalesce(n.last_seen_build_id, '') AS build_id, "
+                "coalesce(n.url, '') AS source_url, true AS vector_expected"
+            ),
+            "entities": (
+                "MATCH (n:Entity) RETURN n.entity_id AS id, '' AS patch_id, "
+                "coalesce(n.last_seen_build_id, '') AS build_id, "
+                "'' AS source_url, true AS vector_expected"
+            ),
+        }
+        snapshot: dict[str, Any] = {"objects": {}, "facts": {}}
+        with self._driver.session() as session:
+            for object_type, query in node_queries.items():
+                snapshot["objects"][object_type] = {
+                    str(row["id"]): {
+                        "patch_id": str(row["patch_id"] or ""),
+                        "build_id": str(row["build_id"] or ""),
+                        "source_url": str(row["source_url"] or ""),
+                        "vector_expected": bool(row["vector_expected"]),
+                    }
+                    for row in session.run(query)
+                    if row["id"] is not None
+                }
+            relationship_types = {
+                str(row["relationshipType"])
+                for row in session.run(
+                    "CALL db.relationshipTypes() YIELD relationshipType "
+                    "RETURN relationshipType"
+                )
+            }
+            relation_rows = (
+                session.run(
+                    """
+                    MATCH (source:Entity)-[fact:RELATES_TO]->(target:Entity)
+                    RETURN source.entity_id AS source_id,
+                           target.entity_id AS target_id,
+                           fact.relation_type AS relation_type,
+                           coalesce(fact.fact_key, '') AS fact_key,
+                           coalesce(fact.source_block_ids, []) AS source_block_ids,
+                           coalesce(fact.page_version_id, '') AS page_version_id,
+                           coalesce(fact.last_seen_build_id, '') AS build_id
+                    """
+                )
+                if "RELATES_TO" in relationship_types
+                else []
+            )
+            from agent_rag.kg.profiler import relation_id
+
+            for row in relation_rows:
+                fact_key = str(row["fact_key"] or "") or relation_id(
+                    str(row["source_id"]),
+                    str(row["target_id"]),
+                    str(row["relation_type"]),
+                )
+                snapshot["facts"][fact_key] = {
+                    "source_block_ids": sorted(row["source_block_ids"] or []),
+                    "page_version_id": str(row["page_version_id"] or ""),
+                    "build_id": str(row["build_id"] or ""),
+                }
+        return snapshot
+
     def get_graph_stats(self) -> dict[str, int]:
         queries = {
             "webpages": "MATCH (w:WebPage) RETURN count(w) AS c",

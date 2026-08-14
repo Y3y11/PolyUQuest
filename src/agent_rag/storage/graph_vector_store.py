@@ -554,3 +554,78 @@ class GraphVectorStore:
         else:
             logger.warning("consistency_check_failed", **report)
         return report
+
+    def collect_reconciliation_inventory(self):
+        """Collect a read-only current-state snapshot across graph and vectors."""
+        from agent_rag.reconciliation import (
+            ConsistencyInventory,
+            CurrentFactState,
+        )
+
+        graph = self.neo4j.get_reconciliation_snapshot()
+        collections = ("webpages", "blocks", "entities", "relations")
+        qdrant = {
+            collection: self.qdrant.get_all_payloads(collection)
+            for collection in collections
+        }
+
+        def _patch_hint(payload: dict[str, Any]) -> dict[str, str]:
+            build_id = str(
+                payload.get("last_seen_build_id") or payload.get("build_id") or ""
+            )
+            patch_id = str(payload.get("patch_id", ""))
+            if not patch_id and build_id.startswith("agent:"):
+                marker = build_id.find(":patch-")
+                patch_id = build_id[marker + 1 :] if marker >= 0 else ""
+            return {
+                "patch_id": patch_id,
+                "source_url": str(payload.get("url", "")),
+            }
+
+        neo_patch_ids: dict[str, dict[str, str]] = {}
+        for objects in graph["objects"].values():
+            for object_id, payload in objects.items():
+                hint = _patch_hint(payload)
+                if hint["patch_id"]:
+                    neo_patch_ids[object_id] = hint
+        for fact_key, payload in graph["facts"].items():
+            hint = _patch_hint(payload)
+            if hint["patch_id"]:
+                neo_patch_ids[fact_key] = hint
+
+        qdrant_patch_ids: dict[str, dict[str, str]] = {}
+        for payloads in qdrant.values():
+            for object_id, payload in payloads.items():
+                hint = _patch_hint(payload)
+                if hint["patch_id"]:
+                    qdrant_patch_ids[object_id] = hint
+
+        return ConsistencyInventory(
+            neo4j_ids={
+                **{
+                    key: set(value)
+                    for key, value in graph["objects"].items()
+                },
+                "relations": set(graph["facts"]),
+            },
+            qdrant_ids={key: set(value) for key, value in qdrant.items()},
+            neo4j_patch_ids=neo_patch_ids,
+            qdrant_patch_ids=qdrant_patch_ids,
+            non_vector_webpage_ids={
+                object_id
+                for object_id, payload in graph["objects"]["webpages"].items()
+                if not payload.get("vector_expected", True)
+            },
+            neo4j_facts={
+                key: CurrentFactState(
+                    fact_key=key,
+                    source_block_ids=value["source_block_ids"],
+                    page_version_id=value["page_version_id"],
+                )
+                for key, value in graph["facts"].items()
+            },
+            qdrant_fact_sources={
+                key: sorted(value.get("source_block_ids", []))
+                for key, value in qdrant["relations"].items()
+            },
+        )

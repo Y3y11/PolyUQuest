@@ -9,16 +9,23 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from agent_rag.api.routes.indexing_router import (
+    create_reconciliation_run,
+    execute_reconciliation_run,
     get_index_job,
     get_indexing_stats,
     get_quality_decision,
     get_quality_stats,
+    get_reconciliation_run,
+    get_reconciliation_stats,
     list_index_jobs,
     list_quality_decisions,
+    list_reconciliation_runs,
     retry_index_job,
 )
 from agent_rag.indexing.outbox import IndexOutbox
 from agent_rag.quality import PageQualityDecision, PageQualityFeatures, PageQualityStore
+from agent_rag.reconciliation import ConsistencyInventory, ReconciliationStore
+from agent_rag.reconciliation.service import ReconciliationService
 from agent_rag.tools.schemas import GraphPatch
 
 
@@ -49,8 +56,22 @@ class IndexingRouterTests(unittest.TestCase):
             self.quality_store,
         )
         self.quality_patcher.start()
+        self.reconciliation_store = ReconciliationStore(
+            Path(self.temp_dir.name) / "reconciliation-ledger.sqlite3"
+        )
+        self.reconciliation_service = ReconciliationService(
+            store=self.reconciliation_store,
+            outbox=self.outbox,
+            inventory_factory=ConsistencyInventory,
+        )
+        self.reconciliation_patcher = patch(
+            "agent_rag.api.routes.indexing_router.reconciliation_service",
+            self.reconciliation_service,
+        )
+        self.reconciliation_patcher.start()
 
     def tearDown(self) -> None:
+        self.reconciliation_patcher.stop()
         self.patcher.stop()
         self.quality_patcher.stop()
         self.temp_dir.cleanup()
@@ -93,6 +114,23 @@ class IndexingRouterTests(unittest.TestCase):
     def test_missing_quality_decision_returns_404(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             get_quality_decision("missing")
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_reconciliation_run_list_detail_stats_and_confirmation(self) -> None:
+        detail = create_reconciliation_run()
+        self.assertEqual(detail.run.status, "planned")
+        self.assertEqual(list_reconciliation_runs(limit=10)[0].run_id, detail.run.run_id)
+        self.assertEqual(get_reconciliation_run(detail.run.run_id).run.run_id, detail.run.run_id)
+        self.assertEqual(get_reconciliation_stats()["runs_total"], 1)
+        with self.assertRaises(HTTPException) as raised:
+            execute_reconciliation_run(detail.run.run_id, confirm=False)
+        self.assertEqual(raised.exception.status_code, 400)
+        executed = execute_reconciliation_run(detail.run.run_id, confirm=True)
+        self.assertEqual(executed.run.status, "completed")
+
+    def test_missing_reconciliation_run_returns_404(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            get_reconciliation_run("missing")
         self.assertEqual(raised.exception.status_code, 404)
 
 

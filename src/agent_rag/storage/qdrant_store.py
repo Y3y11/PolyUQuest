@@ -466,7 +466,19 @@ class QdrantStore:
 
     def get_all_ids(self, collection: str) -> set[str]:
         """Scroll through all points and return payload-based IDs."""
-        all_ids: set[str] = set()
+        return set(self.get_all_payloads(collection))
+
+    def get_all_payloads(self, collection: str) -> dict[str, dict[str, Any]]:
+        """Return identity-keyed payloads for a complete collection scan."""
+        _check_forbidden(collection)
+        identity_fields = {
+            "webpages": ("url",),
+            "blocks": ("block_id",),
+            "entities": ("entity_id",),
+            "relations": ("fact_key", "relation_id"),
+            "topic_keywords": ("keyword",),
+        }
+        payloads: dict[str, dict[str, Any]] = {}
         offset = None
         while True:
             results, offset = self._client.scroll(
@@ -478,13 +490,30 @@ class QdrantStore:
             )
             for r in results:
                 payload = r.payload or {}
-                for key in ("block_id", "entity_id", "keyword", "url"):
+                identity = ""
+                for key in identity_fields[collection]:
                     if key in payload:
-                        all_ids.add(str(payload[key]))
+                        identity = str(payload[key])
                         break
+                if (
+                    not identity
+                    and collection == "relations"
+                    and payload.get("source_id")
+                    and payload.get("target_id")
+                    and payload.get("relation_type")
+                ):
+                    from agent_rag.kg.profiler import relation_id
+
+                    identity = relation_id(
+                        str(payload["source_id"]),
+                        str(payload["target_id"]),
+                        str(payload["relation_type"]),
+                    )
+                if identity:
+                    payloads[identity] = dict(payload)
             if offset is None:
                 break
-        return all_ids
+        return payloads
 
     def close(self):
         self._client.close()

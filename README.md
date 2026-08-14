@@ -128,6 +128,9 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/indexing/jobs` | Async indexing jobs and status |
 | `GET`  | `/api/indexing/quality/decisions` | Audited page-quality decisions |
 | `GET`  | `/api/indexing/quality/stats` | Index/evidence-only/discard counts |
+| `POST` | `/api/indexing/reconciliation/runs` | Read-only cross-store drift scan and repair plan |
+| `POST` | `/api/indexing/reconciliation/runs/{run_id}/execute?confirm=true` | Execute confirmed idempotent repairs |
+| `GET`  | `/api/indexing/reconciliation/stats` | Drift and repair audit metrics |
 | `GET`  | `/api/freshness/targets` | Adaptive page lifecycle targets |
 | `GET`  | `/api/freshness/stats` | Refresh schedule and staleness metrics |
 | `GET`  | `/api/health/live` | Process liveness without dependency access |
@@ -147,7 +150,10 @@ default. Production startup disables Uvicorn reload; use `API_RELOAD=true` only
 for local development. See
 [`docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md`](docs/AGENT_INCREMENTAL_KNOWLEDGE_PRD.md)
 and [`docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md`](docs/AGENT_RELIABILITY_OPTIMIZATION_PRD.md)
-for the write and recovery contracts.
+for the write and recovery contracts. Cross-store governance is documented in
+[`docs/CONSISTENCY_RECONCILIATION_PRD.md`](docs/CONSISTENCY_RECONCILIATION_PRD.md):
+scans are read-only by default, repair execution requires explicit confirmation,
+and ambiguous fact-history conflicts are routed to manual review rather than deleted.
 
 By default, durable indexing is asynchronous. A generic page-quality gate first
 separates current-answer evidence from long-term index value. Only `index`

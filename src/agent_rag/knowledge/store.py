@@ -294,6 +294,14 @@ class FactVersionStore:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def active_map(self) -> dict[str, FactVersion]:
+        """Return the complete active fact ledger keyed by stable fact key."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM fact_versions WHERE status='active'"
+            ).fetchall()
+        return {row["fact_key"]: self._from_row(row) for row in rows}
+
     def stats(self) -> dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute(

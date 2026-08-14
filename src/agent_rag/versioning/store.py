@@ -213,6 +213,30 @@ class PageVersionStore:
             ).fetchone()
         return self._from_row(row) if row else None
 
+    def get_many(self, version_ids: list[str]) -> dict[str, PageVersion]:
+        if not version_ids:
+            return {}
+        unique = list(dict.fromkeys(version_ids))
+        placeholders = ",".join("?" for _ in unique)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM page_versions WHERE version_id IN ({placeholders})",  # noqa: S608
+                unique,
+            ).fetchall()
+        return {
+            row["version_id"]: self._from_row(row)
+            for row in rows
+        }
+
+    def get_latest(self, source_url: str) -> PageVersion | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM page_versions WHERE source_url=? "
+                "ORDER BY created_at DESC, version_id DESC LIMIT 1",
+                (source_url,),
+            ).fetchone()
+        return self._from_row(row) if row else None
+
     def list(
         self, *, source_url: str | None = None, status: VersionStatus | None = None,
         limit: int = 50,

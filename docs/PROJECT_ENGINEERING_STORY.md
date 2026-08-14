@@ -98,6 +98,14 @@ Block 当前态更新后，进一步让 Entity/Relation 层与网页证据同步
 
 解决的问题：页面文本、结构块和知识图关系不再出现版本错层；当前检索不会读到已失效事实，同时历史演进、故障重放和成本指标可审计。
 
+### 迭代 9：跨存储一致性治理与可审计修复
+
+单次发布的读后校验不能覆盖长期运行中的人工操作、存储恢复、历史迁移和极端中断。系统新增独立 Reconciliation 工作流，扫描 Neo4j/Qdrant 的 Page、Block、Entity、Relation，核对 Relation 证据 payload、SQLite active Fact、repair-required PageVersion 与 dead-letter Job，并把 finding 和 repair action 持久化。
+
+扫描默认是无副作用 dry-run。可定位到持久化 Observation/Patch 的漂移生成去重后的 replay action，dead letter 生成 retry action；缺少来源或涉及事实历史冲突的项目进入 manual review。执行必须显式确认，以 SQLite CAS claim 防止重复执行，并在真正执行前再次检查 running Job，避免运维修复与在线 Worker 竞争。
+
+解决的问题：系统不再只知道“某次写入是否成功”，而能持续回答当前知识是否跨存储一致、哪些差异可安全自动恢复、哪些必须人工判断，以及每次修复的 before/after 和失败原因。
+
 ## 5. 当前总体架构
 
 ```text
@@ -129,6 +137,13 @@ Freshness Worker
   -> HTTP conditional revalidation
   -> unchanged: validate only / changed: quality gate + Outbox
   -> retry / quarantine / pause-resume lifecycle
+
+Reconciliation Workflow
+  -> read-only Neo4j/Qdrant/FactVersion/PageVersion/Outbox snapshot
+  -> persisted findings + deduplicated RepairPlan
+  -> explicit confirm + CAS action claim
+  -> replay Patch / retry dead letter
+  -> before/after audit + follow-up verification scan
 ```
 
 ## 6. 技术选型理由
@@ -141,19 +156,20 @@ Freshness Worker
 - SQLite WAL：当前单机 MVP 无需新增基础设施，适合作为 Observation/Patch/Outbox 持久日志；吞吐提升后再迁移 PostgreSQL/Redis Streams。
 - Next.js/TypeScript：展示回答、引用、Agent 动作和知识图谱。
 - HTTP Conditional Request：复用 Web 原生 ETag/Last-Modified，而不是自造刷新协议。
+- Reconciliation Ledger：将数据漂移发现与修复执行分离；SQLite CAS 满足单机 MVP 的动作去重，未来可平滑迁移 PostgreSQL advisory lock。
 
 ## 7. 核心工程原则
 
 1. 本次回答与长期入库分离：Observation 可立即回答，知识发布最终一致。
 2. 工具输出均有来源、时间和 content hash，不把无溯源文本写入知识库。
 3. Agent 探索必须有域名、深度、页面、轮次和耗时预算。
-4. Neo4j/Qdrant 写入采用幂等 Patch、读后校验和可恢复任务，不伪装成跨库强事务。
+4. Neo4j/Qdrant 写入采用幂等 Patch、读后校验、周期 reconciliation 和可恢复任务，不伪装成跨库强事务。
 5. 前端展示可审计决策摘要和工具结果，不展示隐藏思维链。
 6. 每轮需求先写 PRD，代码后有测试、真实验证、迭代记录与 Git 提交。
 
 ## 8. 后续路线
 
-- PageVersion 回滚与 Diff 可视化；
+- PageVersion 回滚、Reconciliation 审批与 Diff 可视化；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
 - OpenTelemetry/Prometheus 与运营面板；
 - 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
@@ -168,6 +184,7 @@ Freshness Worker
 - `docs/ASYNC_INCREMENTAL_INDEXING_PRD.md`：异步入图；
 - `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
 - `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
+- `docs/CONSISTENCY_RECONCILIATION_PRD.md`：跨存储一致性扫描、修复计划与执行审计；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。
