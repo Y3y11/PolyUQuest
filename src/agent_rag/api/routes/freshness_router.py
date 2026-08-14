@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent_rag.freshness import (
     LifecycleStatus,
     PageLifecycleTarget,
     page_lifecycle_store,
 )
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.operator))])
 
 
 @router.get("/freshness/targets", response_model=list[PageLifecycleTarget])
@@ -36,7 +38,11 @@ def get_freshness_stats() -> dict[str, int | float]:
     return page_lifecycle_store.stats()
 
 
-@router.post("/freshness/refresh-now", response_model=PageLifecycleTarget)
+@router.post(
+    "/freshness/refresh-now",
+    response_model=PageLifecycleTarget,
+    dependencies=[Depends(require_role(Role.admin))],
+)
 def refresh_target_now(
     url: Annotated[str, Query(min_length=1)],
 ) -> PageLifecycleTarget:
@@ -46,7 +52,11 @@ def refresh_target_now(
         raise HTTPException(status_code=404, detail="Lifecycle target not found") from exc
 
 
-@router.post("/freshness/pause", response_model=PageLifecycleTarget)
+@router.post(
+    "/freshness/pause",
+    response_model=PageLifecycleTarget,
+    dependencies=[Depends(require_role(Role.admin))],
+)
 def pause_freshness_target(
     url: Annotated[str, Query(min_length=1)],
 ) -> PageLifecycleTarget:
@@ -58,7 +68,11 @@ def pause_freshness_target(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/freshness/resume", response_model=PageLifecycleTarget)
+@router.post(
+    "/freshness/resume",
+    response_model=PageLifecycleTarget,
+    dependencies=[Depends(require_role(Role.admin))],
+)
 def resume_freshness_target(
     url: Annotated[str, Query(min_length=1)],
 ) -> PageLifecycleTarget:

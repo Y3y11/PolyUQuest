@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -29,6 +29,8 @@ from agent_rag.retrieval.hybrid import retrieve_hybrid
 from agent_rag.retrieval.navigation import retrieve_navigation
 from agent_rag.retrieval.reasoning import retrieve_reasoning
 from agent_rag.retrieval.router import route_query
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 from agent_rag.storage.llm_cache import (
     chat_cache_key,
     get_cached,
@@ -39,7 +41,7 @@ from agent_rag.storage.neo4j_store import Neo4jStore
 from agent_rag.storage.qdrant_store import QdrantStore
 
 logger = structlog.get_logger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.reader))])
 
 _router_cfg = thresholds_config.get("retrieval", {}).get("router", {})
 HYBRID_THRESHOLD = float(_router_cfg.get("hybrid_threshold", 0.6))

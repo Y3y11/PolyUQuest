@@ -9,15 +9,17 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from agent_rag.agent.orchestrator import QueryDrivenAgent
 from agent_rag.agent.schemas import AgentQueryRequest, AgentQueryResponse
 from agent_rag.config import settings
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 
 logger = structlog.get_logger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.reader))])
 
 
 def _sse_event(event: str, data: Any) -> str:

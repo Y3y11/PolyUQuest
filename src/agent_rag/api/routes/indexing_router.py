@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent_rag.indexing.outbox import IndexJob, IndexJobStatus, index_outbox
 from agent_rag.knowledge import FactVersion, fact_version_store
@@ -13,10 +13,12 @@ from agent_rag.quality import PageQualityDecision, page_quality_store
 from agent_rag.quality.gate import QualityAction
 from agent_rag.reconciliation import ReconciliationRun, ReconciliationRunDetail
 from agent_rag.reconciliation.service import reconciliation_service
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 from agent_rag.versioning import PageVersion, page_version_store
 from agent_rag.versioning.store import VersionStatus
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.operator))])
 
 
 @router.get("/indexing/jobs", response_model=list[IndexJob])
@@ -40,7 +42,11 @@ def get_indexing_stats() -> dict[str, int | float]:
     return index_outbox.stats()
 
 
-@router.post("/indexing/jobs/{job_id}/retry", response_model=IndexJob)
+@router.post(
+    "/indexing/jobs/{job_id}/retry",
+    response_model=IndexJob,
+    dependencies=[Depends(require_role(Role.admin))],
+)
 def retry_index_job(job_id: str) -> IndexJob:
     if index_outbox.get(job_id) is None:
         raise HTTPException(status_code=404, detail="Index job not found")
@@ -140,6 +146,7 @@ def get_reconciliation_run(run_id: str) -> ReconciliationRunDetail:
 @router.post(
     "/indexing/reconciliation/runs/{run_id}/execute",
     response_model=ReconciliationRunDetail,
+    dependencies=[Depends(require_role(Role.admin))],
 )
 def execute_reconciliation_run(
     run_id: str,

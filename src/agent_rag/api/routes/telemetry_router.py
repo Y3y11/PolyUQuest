@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent_rag.config import observability_config
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 from agent_rag.telemetry.models import RunTelemetry, RunTelemetryDetail
 from agent_rag.telemetry.store import telemetry_store
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.operator))])
 
 
 @router.get("/telemetry/runs", response_model=list[RunTelemetry])

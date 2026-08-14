@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import FastAPI
@@ -17,10 +18,13 @@ from agent_rag.api.routes import (
     health_router,
     indexing_router,
     query_router,
+    security_router,
     telemetry_router,
 )
 from agent_rag.config import settings
 from agent_rag.retrieval import _bm25, _embedding
+from agent_rag.security.audit import SecurityAuditMiddleware
+from agent_rag.security.store import security_audit_store
 
 logger = structlog.get_logger(__name__)
 
@@ -32,6 +36,17 @@ async def _lifespan(app: FastAPI):
     app.state.bm25_ready = False
     app.state.index_worker = None
     app.state.freshness_worker = None
+    try:
+        cutoff = datetime.now(UTC) - timedelta(
+            days=settings.security_audit_retention_days
+        )
+        purged = await asyncio.to_thread(security_audit_store.purge, cutoff.isoformat())
+        if purged:
+            logger.info("security_audit_purged", deleted=purged)
+    except Exception as exc:
+        logger.warning(
+            "security_audit_purge_failed", error_type=type(exc).__name__
+        )
     # Warm BM25 in a background thread so it doesn't block startup. The cold
     # build is several minutes on a full corpus; after the first warm run we
     # persist to disk, so subsequent restarts are near-instant. If a query
@@ -126,6 +141,7 @@ else:
     _cors_kwargs["allow_origins"] = settings.cors_origins_list
 
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
+app.add_middleware(SecurityAuditMiddleware)
 
 app.include_router(query_router.router, prefix="/api", tags=["query"])
 app.include_router(agent_router.router, prefix="/api", tags=["agent"])
@@ -134,6 +150,7 @@ app.include_router(health_router.router, prefix="/api", tags=["health"])
 app.include_router(indexing_router.router, prefix="/api", tags=["indexing"])
 app.include_router(freshness_router.router, prefix="/api", tags=["freshness"])
 app.include_router(telemetry_router.router, prefix="/api", tags=["telemetry"])
+app.include_router(security_router.router, prefix="/api", tags=["security"])
 
 
 def start():

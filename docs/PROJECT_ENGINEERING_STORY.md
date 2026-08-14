@@ -126,11 +126,22 @@ Release Gate 同时检查 candidate 绝对下限、baseline 回退、延迟/Toke
 
 解决的问题：评测不再只是一张人工阅读的平均分报表，而成为有数据治理前提、能识别长尾回退和成本劣化、能够实际阻止不安全变更进入发布流程的工程控制面。同时明确仓库 Sample 仍是 Draft 示例，不能冒充生产业务 Gold。
 
+### 迭代 12：API 安全边界、RBAC 与隐私安全审计
+
+系统具备在线抓取、增量入图、任务重试、刷新暂停和一致性修复后，匿名 API 已不再符合企业内网部署要求。CORS 只能约束浏览器跨域，`confirm=true` 只能防止误操作，都不能证明调用者身份或权限。本轮建立单租户服务边界：生产环境禁止 `API_AUTH_MODE=disabled` 启动；API Key 只配置 SHA-256 摘要，使用恒定时间比较；Principal 按 `reader / operator / admin` 形成层级授权。
+
+Query/Agent/Graph 需要 reader，Telemetry 与运维状态需要 operator，Retry、Refresh/Pause/Resume、Reconciliation Execute 和 Security Audit 需要 admin；健康探针保持公开。每次受保护请求记录服务生成的 request ID、Principal、角色、route template、状态和授权结果，但不保存原始 Key、Key 请求摘要、Query String、问题、回答、正文或 Client IP。审计 SQLite 使用显式连接关闭、retention purge 和 fail-open recorder，磁盘故障只累计 dropped write，不影响业务响应。
+
+解决的问题：部署方可以阻止匿名生产实例、实施最小权限并追溯有副作用操作，同时不会为了审计扩大敏感数据面。浏览器端明确通过企业 SSO/BFF/API Gateway 代理，不把静态服务 Key 暴露在 Next.js Bundle。本轮不冒充完整 IAM：终端用户认证、多租户行级隔离、OIDC、Key 托管与分布式限流仍属于后续演进。
+
 ## 5. 当前总体架构
 
 ```text
 Next.js UI
-  -> FastAPI Agent API / SSE
+  -> Enterprise SSO / BFF or API Gateway (production)
+  -> FastAPI API-key Principal + reader/operator/admin RBAC
+      -> body-free Security Audit Ledger
+  -> Agent API / SSE
       -> Query Profile + Evidence Evaluator + Budget Controller
       -> PolyUQuest Search Tool
           -> Qdrant Dense + BM25 + Neo4j Graph + Reranker
@@ -186,6 +197,7 @@ Telemetry + Evaluation
 - HTTP Conditional Request：复用 Web 原生 ETag/Last-Modified，而不是自造刷新协议。
 - Reconciliation Ledger：将数据漂移发现与修复执行分离；SQLite CAS 满足单机 MVP 的动作去重，未来可平滑迁移 PostgreSQL advisory lock。
 - Manifest + Policy-as-Code：把 Gold 数据审批、样本充足性、质量/成本阈值和关键切片规则纳入版本控制；确定性 Fixture 负责验证门禁机制，真实业务 Gold 由部署方独立治理。
+- Hash-only API Key + FastAPI Dependency：适合作为单租户服务到服务认证 MVP；角色依赖显式附着路由，安全审计只保存 route template 和授权元数据。终端用户身份交给 BFF/企业 SSO，后续再迁移 OIDC/JWT 与多租户 Scope。
 
 ## 7. 核心工程原则
 
@@ -201,7 +213,7 @@ Telemetry + Evaluation
 - PageVersion 回滚、Reconciliation 审批与 Diff 可视化；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
 - 将现有稳定 telemetry contract 导出到 OpenTelemetry/Prometheus 与运营面板；
-- 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
+- OIDC/JWT、企业 SSO、Key 托管轮换、租户/Domain Scope 与端到端数据隔离；
 - 事实冲突裁决、来源优先级与时态查询；
 - Human-in-the-loop 审批、租户隔离和敏感实体治理。
 - 建立 50～100 题以上经双人复核的真实业务 Gold、冻结网页证据快照和不可变 baseline registry，再将离线门禁衔接 shadow/canary 与自动回滚。
@@ -217,6 +229,7 @@ Telemetry + Evaluation
 - `docs/CONSISTENCY_RECONCILIATION_PRD.md`：跨存储一致性扫描、修复计划与执行审计；
 - `docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`：端到端运行度量、SLO 与离线回归合同；
 - `docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md`：评测数据治理、业务切片和自动发布门禁；
+- `docs/API_SECURITY_RBAC_AUDIT_PRD.md`：生产认证、三级 RBAC 与隐私安全审计；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

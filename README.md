@@ -106,12 +106,37 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
 | Router confidence cutoffs, retrieval thresholds | `configs/thresholds.yaml` |
 | Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
 | Runtime telemetry retention and SLO targets | `configs/observability.yaml` |
+| API authentication, RBAC keys, security audit retention | `.env` |
 | Entity alias dictionary | `configs/aliases.yaml` |
 | Connector site identity / seed labels / URL policy | `configs/crawl.yaml` |
 
 **LLM provider** defaults to `siliconflow`; `deepseek` and `qwen` also work by
 setting `LLM_PROVIDER` in `.env`. **Embeddings** default to BGE-M3 (1024-d) via
 the SiliconFlow API.
+
+### API security
+
+Local development defaults to `APP_ENVIRONMENT=development` and
+`API_AUTH_MODE=disabled`. Production refuses to start anonymously. Generate a
+one-time random key and its hash-only configuration record with:
+
+```bash
+python -m agent_rag.security.cli --key-id service-admin --role admin
+```
+
+Store the raw value in the caller's secret manager, put only the generated
+`key_id:role:sha256` record in `API_AUTH_KEYS`, set
+`API_AUTH_MODE=api_key`, and send the raw value as `X-API-Key`. Roles are
+hierarchical: reader can query and inspect the graph, operator can read
+operational state and run a reconciliation scan, and admin can retry, refresh,
+pause/resume, execute repairs, and inspect the security audit. Health probes
+remain public.
+
+Do not put a static service key in `NEXT_PUBLIC_*`, browser storage, or a
+frontend bundle. A production browser deployment should use enterprise
+SSO/session handling in a BFF or API gateway, which injects the service key on
+the server side. See
+[`docs/API_SECURITY_RBAC_AUDIT_PRD.md`](docs/API_SECURITY_RBAC_AUDIT_PRD.md).
 
 ---
 
@@ -138,6 +163,9 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/telemetry/runs/{run_id}` | Run detail with stage and LLM usage spans |
 | `GET`  | `/api/telemetry/stats` | P50/P95/P99 latency, success and token aggregates |
 | `GET`  | `/api/telemetry/slo` | Configured targets with pass/fail/insufficient-data status |
+| `GET`  | `/api/security/whoami` | Authenticated workload identity and role |
+| `GET`  | `/api/security/audit` | Admin-only body-free security audit |
+| `GET`  | `/api/security/audit/stats` | Authorization outcome and dropped-write counts |
 | `GET`  | `/api/health/live` | Process liveness without dependency access |
 | `GET`  | `/api/health/ready` | Startup and core dependency readiness |
 | `GET`  | `/api/health/dependencies` | Neo4j and Qdrant status |

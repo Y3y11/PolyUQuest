@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+from agent_rag.security.credentials import parse_api_key_records
 
 load_dotenv()
 
@@ -27,6 +29,14 @@ def _load_yaml(name: str) -> dict[str, Any]:
 
 
 class Settings(BaseSettings):
+    # Deployment and API security boundary
+    app_environment: Literal["development", "test", "production"] = "development"
+    api_auth_mode: Literal["disabled", "api_key"] = "disabled"
+    # Comma-separated key_id:role:sha256 entries. Raw keys never belong here.
+    api_auth_keys: str = ""
+    security_audit_path: str = "data/runtime/security_audit.sqlite3"
+    security_audit_retention_days: int = 90
+
     # LLM
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -118,13 +128,15 @@ class Settings(BaseSettings):
         return [h.strip() for h in raw.split(",") if h.strip()]
 
     @model_validator(mode="after")
-    def _validate_cors(self) -> Settings:
-        """启动期校验 CORS 配置，防止误配重新出现。
+    def _validate_runtime(self) -> Settings:
+        """启动期校验 Worker、安全边界与 CORS，防止误配上线。
 
         规则：
-        1. credentials=True 时，白名单禁止通配 "*"（浏览器会直接拒绝）。
-        2. credentials=True 时，origin_regex 禁止使用等价于通配的过宽模式。
-        3. origin_regex 非空时必须能被 re.compile 通过，否则延后到
+        1. Worker lease/retry、审计 retention 必须为正数。
+        2. 生产环境禁止匿名 API，API-key 模式必须有合法 admin key。
+        3. credentials=True 时，白名单禁止通配 "*"（浏览器会直接拒绝）。
+        4. credentials=True 时，origin_regex 禁止使用等价于通配的过宽模式。
+        5. origin_regex 非空时必须能被 re.compile 通过，否则延后到
            Starlette 挂载中间件时才报错，栈信息对排查不友好。
         """
         origins = self.cors_origins_list
@@ -142,6 +154,14 @@ class Settings(BaseSettings):
             raise ValueError("FRESHNESS_WORKER_POLL_SECONDS must be positive")
         if self.freshness_worker_lease_seconds <= 0:
             raise ValueError("FRESHNESS_WORKER_LEASE_SECONDS must be positive")
+        if self.security_audit_retention_days <= 0:
+            raise ValueError("SECURITY_AUDIT_RETENTION_DAYS must be positive")
+        if self.app_environment == "production" and self.api_auth_mode == "disabled":
+            raise ValueError(
+                "API_AUTH_MODE=disabled is not allowed in APP_ENVIRONMENT=production"
+            )
+        if self.api_auth_mode == "api_key":
+            parse_api_key_records(self.api_auth_keys, require_admin=True)
 
         if self.cors_allow_credentials:
             if "*" in origins:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent_rag.api.schemas import (
     GraphDataRequest,
@@ -13,9 +13,11 @@ from agent_rag.api.schemas import (
     GraphNode,
     GraphStatsResponse,
 )
+from agent_rag.security.auth import require_role
+from agent_rag.security.models import Role
 from agent_rag.storage.neo4j_store import Neo4jStore
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_role(Role.reader))])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
