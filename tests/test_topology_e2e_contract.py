@@ -189,6 +189,9 @@ def test_workflow_always_uploads_evidence_and_removes_isolated_volumes() -> None
     assert "agent-rag-topology-e2e" in workflow
     assert "if: always()" in workflow
     assert "down -v --remove-orphans" in workflow
+    assert "neo4j-health.json" in workflow
+    assert "neo4j-debug.log" in workflow
+    assert "tail -n 500 /logs/debug.log" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
     assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow

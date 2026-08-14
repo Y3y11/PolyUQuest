@@ -131,6 +131,14 @@ jobs:
         if: always()
         run: |
           mkdir -p data/runtime/topology-e2e
+          neo4j_id="$(docker compose -f compose.topology-e2e.yml -p "$TOPOLOGY_E2E_PROJECT" ps -q neo4j)"
+          if [ -n "$neo4j_id" ]; then
+            docker inspect --format '{{json .State.Health}}' "$neo4j_id" \
+              > data/runtime/topology-e2e/neo4j-health.json || true
+            docker compose -f compose.topology-e2e.yml -p "$TOPOLOGY_E2E_PROJECT" \
+              exec -T neo4j sh -c 'tail -n 500 /logs/debug.log' \
+              > data/runtime/topology-e2e/neo4j-debug.log 2>&1 || true
+          fi
           docker compose -f compose.topology-e2e.yml -p "$TOPOLOGY_E2E_PROJECT" logs --no-color > "$TOPOLOGY_E2E_LOGS" 2>&1 || true
 
       - name: Remove isolated topology project
@@ -148,5 +156,7 @@ jobs:
           path: |
             data/runtime/topology-e2e/report.json
             data/runtime/topology-e2e/compose.log
+            data/runtime/topology-e2e/neo4j-health.json
+            data/runtime/topology-e2e/neo4j-debug.log
           if-no-files-found: error
           retention-days: 14
