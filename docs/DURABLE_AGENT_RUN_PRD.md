@@ -1,6 +1,6 @@
 # PolyUQuest 持久化 Agent Run 与 SSE 断线恢复 PRD
 
-> 迭代 19 · 2026-08-14 · 状态：已完成本地实现与自动化验证
+> 迭代 19 · 2026-08-14 · 状态：已完成本地与 GitHub Linux 门禁验证
 
 ## 1. 业务背景
 
@@ -261,6 +261,20 @@ production Compose：API 设置 `AGENT_RUN_WORKER_ENABLED=false`，Worker=true�
 | 兼容 | 原 `/agent/query/stream` 行为与既有 E2E 不回退 |
 | 隐私 | Audit 不保存内容；browser storage 只有 run_id/query；retention 可执行 |
 | 回归 | Python 全量、Vitest/tsc、生产拓扑、BFF、供应链门禁全绿 |
+
+### 10.1 验收结果（提交 `8cdf08e`）
+
+- 本地 Python：219 passed，62 subtests passed；
+- 本地 Durable Store/Worker/API：12 passed，包含租约过期后的跨 Worker attempt 接管；
+- 前端：3 个 Vitest 文件、16 tests passed；TypeScript non-incremental check passed；
+- deployment policy、目标 Ruff、diff check 和敏感 key pattern check passed；
+- GitHub [Business E2E Gate #31812265978](https://github.com/Y3y11/PolyUQuest/actions/runs/31812265978)：success；
+- GitHub [Production Topology E2E Gate #31812266055](https://github.com/Y3y11/PolyUQuest/actions/runs/31812266055)：success；
+- GitHub [Browser BFF SSE Gate #31812266223](https://github.com/Y3y11/PolyUQuest/actions/runs/31812266223)：success；
+- GitHub [Container Supply Chain Gate #31812265875](https://github.com/Y3y11/PolyUQuest/actions/runs/31812265875)：success。
+
+本地 Docker daemon 未开启，因此没有把本地容器输出包装成证据；真实 Linux frontend build、BFF
+容器交付、独立生产拓扑和供应链合同均由上述 GitHub runs 验证。
 
 ## 11. 文件级修改计划
 
