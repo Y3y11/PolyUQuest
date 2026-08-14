@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -12,6 +12,7 @@ from agent_rag.config import Settings
 from agent_rag.deployment import runtime_profile
 from agent_rag.e2e.fixture_app import app, state
 from agent_rag.e2e.topology_driver import TopologyE2EDriver
+from agent_rag.e2e.topology_runtime import _initialize_backends
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -79,6 +80,38 @@ def test_fixture_service_supports_etag_and_version_control() -> None:
         assert second.status_code == 200
         assert "Security Review Board" in second.text
         assert state.read().requests - before == 3
+
+
+def test_fixture_container_entrypoint_has_no_storage_import_chain() -> None:
+    fixture_app = (ROOT / "src" / "agent_rag" / "e2e" / "fixture_app.py").read_text(
+        encoding="utf-8"
+    )
+    fixture_content = (
+        ROOT / "src" / "agent_rag" / "e2e" / "fixture_content.py"
+    ).read_text(encoding="utf-8")
+
+    assert "from agent_rag.e2e.fixture_content import fixture_html" in fixture_app
+    assert "agent_rag.e2e.site" not in fixture_app
+    assert "agent_rag.tools" not in fixture_content
+
+
+def test_topology_backend_initialization_retries_startup_race() -> None:
+    first = MagicMock()
+    first.init_all.side_effect = RuntimeError("neo4j is starting")
+    second = MagicMock()
+
+    with (
+        patch(
+            "agent_rag.e2e.topology_runtime.GraphVectorStore",
+            side_effect=[first, second],
+        ),
+        patch("agent_rag.e2e.topology_runtime.time.sleep") as sleep,
+    ):
+        _initialize_backends(timeout_seconds=1, retry_seconds=0)
+
+    first.close.assert_called_once_with()
+    second.close.assert_called_once_with()
+    sleep.assert_called_once_with(0)
 
 
 def test_topology_driver_parses_audited_sse_contract(tmp_path: Path) -> None:

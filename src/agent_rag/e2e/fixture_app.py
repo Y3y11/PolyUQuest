@@ -9,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from agent_rag.e2e.site import fixture_html
+from agent_rag.e2e.fixture_content import fixture_html
 
 
 class FixtureState(BaseModel):

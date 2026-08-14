@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+import structlog
 
 from agent_rag.agent.frontier import FrontierSelector
 from agent_rag.agent.orchestrator import QueryDrivenAgent
@@ -38,6 +39,7 @@ from agent_rag.versioning import page_version_store
 
 _embedder = DeterministicEmbedder(settings.embedding_dim)
 _extractor = DeterministicKnowledgeExtractor(settings.business_e2e_token)
+logger = structlog.get_logger(__name__)
 
 
 def canonical_url() -> str:
@@ -54,13 +56,32 @@ def _configure_crawl() -> None:
     )
 
 
+def _initialize_backends(*, timeout_seconds: float = 90, retry_seconds: float = 1) -> None:
+    """Wait for fresh Compose dependencies before initializing their schemas."""
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        store = GraphVectorStore()
+        try:
+            store.init_all()
+            return
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise
+            logger.warning(
+                "topology_backend_not_ready",
+                attempt=attempt,
+                error_type=type(exc).__name__,
+            )
+            time.sleep(retry_seconds)
+        finally:
+            store.close()
+
+
 def prepare_process_runtime() -> None:
     _configure_crawl()
-    store = GraphVectorStore()
-    try:
-        store.init_all()
-    finally:
-        store.close()
+    _initialize_backends()
 
 
 class MappedOriginFetcher:
