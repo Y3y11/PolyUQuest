@@ -134,11 +134,79 @@ Query/Agent/Graph 需要 reader，Telemetry 与运维状态需要 operator，Ret
 
 解决的问题：部署方可以阻止匿名生产实例、实施最小权限并追溯有副作用操作，同时不会为了审计扩大敏感数据面。浏览器端明确通过企业 SSO/BFF/API Gateway 代理，不把静态服务 Key 暴露在 Next.js Bundle。本轮不冒充完整 IAM：终端用户认证、多租户行级隔离、OIDC、Key 托管与分布式限流仍属于后续演进。
 
+### 迭代 13：生产部署基线与独立 Worker
+
+补齐 API、Worker、Next.js、Neo4j、Qdrant 的单机生产 Compose；API 与 Worker 使用同一
+后端镜像、不同 entrypoint，关闭 API 内嵌后台任务。容器采用 non-root、read-only、能力
+裁剪和 internal network，生产配置缺认证、数据库密码或模型凭据时 fail-fast。Worker
+停止领取后在 grace period 内完成当前工作；冷备份包含校验和、确认式恢复与恢复后验证。
+
+解决的问题：算法与业务能力从开发机启动方式演进为可重复部署、独立扩缩、可停机、
+可备份恢复和可回滚的生产基线。
+
+### 迭代 14：容器制品与供应链 CI 门禁
+
+GitHub Linux runner 使用 BuildKit 真实构建前后端镜像，在 UID/GID 10001、只读根文件系统
+下运行容器合同和前端 smoke；生成 CycloneDX SBOM、漏洞报告、inspect 与 build metadata。
+Actions 和扫描器均固定版本/SHA，对有修复版本的 CRITICAL 漏洞阻断，并上传可追溯制品。
+
+解决的问题：静态 Dockerfile 检查不再被当作“镜像可构建、可运行、安全”的证据，发布
+结果能够关联具体 commit 并由机器复验。
+
+### 迭代 15：运行能力分层与默认镜像瘦身
+
+远程 embedding/reranker 的企业 serving 节点无需携带完整 Torch 训练/评测依赖。系统将
+后端拆为默认 `remote` 与显式 `local-ml` 两种 capability profile；移除未使用的
+FlagEmbedding，镜像写入不可伪装的 profile marker，配置与制品能力不匹配时启动前失败。
+CI 分别构建、运行、扫描两个 profile，并为默认 remote 镜像设置体积和依赖禁入预算。
+
+解决的问题：可选本地模型能力不再放大默认镜像、构建时间、分发成本、SBOM 与攻击面，
+同时保留无外部 embedding 服务场景的显式制品。
+
+### 迭代 16：在线知识闭环业务 E2E 门禁
+
+使用真实 Neo4j、Qdrant、SQLite 和生产 Agent/Worker 类，模型与网页边界替换为确定性
+Fixture。场景覆盖冷查询在线探索、临时证据回答、异步入库、首次 Qdrant 故障、进程重建
+后 retry、热查询零抓取、页面 v2 更新、changed-only embedding、旧事实退休、新事实生效
+及 Patch 幂等重放，输出机器可读 artifact。
+
+解决的问题：单元测试和镜像 smoke 之外，首次形成“知识缺口 → Web 探索 → 回答 → 入库
+→ 复用 → 更新 → 恢复”的真实双存储业务证据。
+
+### 迭代 17：生产拓扑 E2E 与 Worker 租约接管
+
+进一步把场景拆为独立 API、Worker、Fixture、Neo4j、Qdrant 容器。查询必须经真实
+HTTP/SSE 和 reader RBAC；API 只 enqueue，Worker 跨进程消费共享 SQLite WAL。门禁在
+任务被 claim 后 SIGKILL Worker，等待 lease 过期，由新实例二次 claim 并完成发布；同时
+验证 Worker heartbeat/health、热查询复用、页面刷新与安全审计关联。
+
+解决的问题：直接调用 Python 类的 E2E 被提升为生产网络、进程、鉴权、流协议和故障接管
+证据，证明 API/Worker 分离不是只存在于 Compose 声明中。
+
+### 迭代 18：浏览器安全 BFF 与 SSE 交付
+
+浏览器固定访问同源 `/api`；Next.js Route Handler 使用显式 reader route/method allowlist，
+校验 Origin、实际 body 大小和 timeout，从 `root:10001/0440` 的 file secret 注入 reader
+key，不转发浏览器 Cookie/Authorization/X-API-Key。BFF 逐 chunk 传递 SSE、关联请求 ID、
+清洗上游错误，并把 downstream cancel 传播到 FastAPI。
+
+Linux production E2E 使用受控 upstream 验证 403/404/413 不触达后端、3 chunk 事件顺序、
+5xx 清洗、取消、完整 key 的 hash 匹配以及 9 个客户端 script 无 canary/内部地址/public
+API 变量。门禁最终 6/6 checks 通过；排查过程同时发现并修复 Compose file secret 权限、
+测试进程误读 secret 和换行导致 digest 不一致三类真实交付问题。
+
+解决的问题：生产用户终于经过 Browser → Next.js BFF → FastAPI SSE 的真实交付链；长期
+服务凭据不进入 bundle，frontend 能通过 internal network 调用 API，但终端用户身份仍明确
+交给企业 SSO/ingress，未把共享 reader key 包装成完整 IAM。
+
 ## 5. 当前总体架构
 
 ```text
-Next.js UI
-  -> Enterprise SSO / BFF or API Gateway (production)
+Browser UI（无 service key）
+  -> TLS / Enterprise SSO Ingress
+  -> Next.js same-origin BFF
+      -> reader route allowlist + Origin/body/timeout
+      -> runtime file secret + SSE/cancel passthrough
   -> FastAPI API-key Principal + reader/operator/admin RBAC
       -> body-free Security Audit Ledger
   -> Agent API / SSE
@@ -198,6 +266,10 @@ Telemetry + Evaluation
 - Reconciliation Ledger：将数据漂移发现与修复执行分离；SQLite CAS 满足单机 MVP 的动作去重，未来可平滑迁移 PostgreSQL advisory lock。
 - Manifest + Policy-as-Code：把 Gold 数据审批、样本充足性、质量/成本阈值和关键切片规则纳入版本控制；确定性 Fixture 负责验证门禁机制，真实业务 Gold 由部署方独立治理。
 - Hash-only API Key + FastAPI Dependency：适合作为单租户服务到服务认证 MVP；角色依赖显式附着路由，安全审计只保存 route template 和授权元数据。终端用户身份交给 BFF/企业 SSO，后续再迁移 OIDC/JWT 与多租户 Scope。
+- Next.js Server-only BFF：浏览器保持同源且不接触 raw service key；Route Handler 只开放
+  reader 能力并透明传递 SSE。工作负载身份与最终用户身份分离，SSO/OIDC 仍由受控入口负责。
+- Docker capability profile + Policy-as-Code：默认 remote 镜像不携带本地 ML 栈；Linux CI
+  同时验证 non-root/read-only 运行合同、SBOM/CVE 和真实业务/拓扑/BFF 场景。
 
 ## 7. 核心工程原则
 
@@ -230,6 +302,12 @@ Telemetry + Evaluation
 - `docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`：端到端运行度量、SLO 与离线回归合同；
 - `docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md`：评测数据治理、业务切片和自动发布门禁；
 - `docs/API_SECURITY_RBAC_AUDIT_PRD.md`：生产认证、三级 RBAC 与隐私安全审计；
+- `docs/PRODUCTION_DEPLOYMENT_BASELINE_PRD.md`：生产 Compose、独立 Worker 与备份恢复；
+- `docs/CONTAINER_SUPPLY_CHAIN_GATE_PRD.md`：镜像合同、SBOM/CVE 与供应链门禁；
+- `docs/RUNTIME_PROFILE_IMAGE_OPTIMIZATION_PRD.md`：remote/local-ml 能力分层与镜像瘦身；
+- `docs/BUSINESS_E2E_GATE_PRD.md`：真实双存储在线知识闭环；
+- `docs/PRODUCTION_TOPOLOGY_E2E_PRD.md`：HTTP/SSE、独立进程与 Worker lease 接管；
+- `docs/BROWSER_BFF_SSE_PRD.md`：浏览器同源 BFF、凭据隔离与 SSE 交付；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

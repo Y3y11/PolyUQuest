@@ -1,6 +1,6 @@
 # PolyUQuest 浏览器安全 BFF 与 SSE 交付 PRD
 
-> 迭代 18 · 2026-08-14 · 状态：实施中
+> 迭代 18 · 2026-08-14 · 状态：已完成并通过 GitHub Linux production BFF 验收
 
 ## 1. 业务背景
 
@@ -212,6 +212,17 @@ production Compose 调整：
 | Compose | frontend 可访问 internal API，key 通过 secret file，配置可渲染 |
 | 构建 | `npm test`、TypeScript、Next standalone build 全部通过 |
 | 远程门禁 | Linux runner 启动真实 frontend + controlled upstream，机器报告通过 |
+
+最终验收证据：
+
+- 本地 Python 全量回归 `206 passed`；BFF/Deployment 合同 `17 passed`；
+- Frontend Vitest `2 files / 11 tests passed`，TypeScript noEmit 通过；
+- GitHub [Browser BFF SSE Gate #31808601451](https://github.com/Y3y11/PolyUQuest/actions/runs/31808601451)
+  在提交 `a87c6f7` 上通过，完整 workflow 用时约 152 秒；
+- 机器报告 6/6 checks 通过，场景本身 1,262 ms：拒绝策略、3 chunk SSE、5xx 清洗、
+  downstream cancel、server key 注入和 9 个客户端 script 扫描全部成立；
+- 同一提交的 [Container Supply Chain Gate #31808601375](https://github.com/Y3y11/PolyUQuest/actions/runs/31808601375)
+  通过。
 
 ## 10. 文件级修改计划
 
