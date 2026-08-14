@@ -1,15 +1,13 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 
 const baseUrl = process.env.BFF_E2E_BASE_URL || "http://127.0.0.1:13000";
 const upstreamUrl = process.env.BFF_E2E_UPSTREAM_URL || "http://127.0.0.1:13001";
 const allowedOrigin = process.env.BFF_E2E_ALLOWED_ORIGIN || baseUrl;
-const secretFile = process.env.BFF_E2E_SECRET_FILE;
+const secretMarker = process.env.BFF_E2E_SECRET_MARKER;
 const output = process.env.BFF_E2E_OUTPUT || "frontend/artifacts/bff-e2e/report.json";
-if (!secretFile) throw new Error("BFF_E2E_SECRET_FILE is required");
-
-const secret = (await readFile(secretFile, "utf8")).trim();
+if (!secretMarker) throw new Error("BFF_E2E_SECRET_MARKER is required");
 const startedAt = new Date();
 const checks = [];
 
@@ -175,7 +173,7 @@ async function run() {
     "bff.client_bundle_redaction",
     "no raw key, internal API URL, or deprecated public API variable",
     { scripts_scanned: scriptPaths.length },
-    !publicBundle.includes(secret) &&
+    !publicBundle.includes(secretMarker) &&
       !publicBundle.includes("http://api:8000") &&
       !publicBundle.includes("NEXT_PUBLIC_API_URL")
   );

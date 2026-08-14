@@ -89,7 +89,8 @@ npm run build
 必须确认：
 
 - `frontend/lib/api.ts` 固定为 `/api`；
-- frontend Docker image/client chunks 不包含 `NEXT_PUBLIC_API_URL`、内部 API URL 或 raw key；
+- frontend Docker image/client chunks 不包含 `NEXT_PUBLIC_API_URL`、内部 API URL 或本次
+  E2E raw key 的公开 canary 前缀；driver 不读取 secret file；
 - Compose frontend 同时位于 frontend/backend network；
 - frontend 只挂载 `bff_backend_api_key` secret；
 - FastAPI 的 reader hash 与 secret file raw key 匹配。

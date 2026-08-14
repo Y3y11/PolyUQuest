@@ -200,7 +200,7 @@ production Compose 调整：
 
 | 边界 | 验收标准 |
 |---|---|
-| 客户端 bundle | 不包含 `NEXT_PUBLIC_API_URL`、raw service key 或内部 API URL |
+| 客户端 bundle | 不包含 `NEXT_PUBLIC_API_URL`、raw service key canary 或内部 API URL |
 | 路由白名单 | reader routes 成功；operator/admin/未知路径 404；错误 method 405 |
 | Origin | production POST 缺失或不在 allowlist 返回 403，且不调用 upstream |
 | Body | Content-Length 与实际读取均执行上限，超限返回 413 |
@@ -242,6 +242,8 @@ production Compose 调整：
 - **secret/hash 不匹配**：readiness smoke test 必须实际通过 FastAPI reader route；
 - **file secret 权限不匹配**：Linux provisioning 固定 `root:10001/0440`，E2E 使用与生产
   相同的非 root UID/GID 验证真实读取；
+- **验证进程扩大 secret 读取面**：E2E raw key 使用公开 canary 前缀和随机秘密后缀，
+  driver 只扫描公开前缀，认证端只接收完整 key 的 SHA-256；
 - **catch-all 扩大攻击面**：完整正则 allowlist，拒绝未知 path/method，不转发用户鉴权头；
 - **Next build 读取运行时 secret**：配置延迟到请求时加载，不在 builder stage 要求 secret；
 - **本地开发复杂**：development 默认 backend URL + 无 key兼容匿名本地 API。
