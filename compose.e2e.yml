@@ -1,0 +1,30 @@
+name: polyuquest-business-e2e
+
+services:
+  neo4j-e2e:
+    image: neo4j:5.26.28
+    environment:
+      NEO4J_AUTH: neo4j/business_e2e_password
+    ports:
+      - "127.0.0.1:17687:7687"
+    tmpfs:
+      - /data:size=512m
+      - /logs:size=128m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          cypher-shell -u neo4j -p business_e2e_password
+          "RETURN 1" >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: "no"
+
+  qdrant-e2e:
+    image: qdrant/qdrant:v1.18.2
+    ports:
+      - "127.0.0.1:16333:6333"
+    tmpfs:
+      - /qdrant/storage:size=512m
+    restart: "no"

@@ -1,0 +1,122 @@
+name: Business E2E Gate
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/business-e2e-gate.yml"
+      - "configs/agent.yaml"
+      - "configs/business_e2e.yaml"
+      - "configs/crawl.yaml"
+      - "configs/thresholds.yaml"
+      - "src/agent_rag/agent/**"
+      - "src/agent_rag/e2e/**"
+      - "src/agent_rag/freshness/**"
+      - "src/agent_rag/indexing/**"
+      - "src/agent_rag/knowledge/**"
+      - "src/agent_rag/quality/**"
+      - "src/agent_rag/storage/**"
+      - "src/agent_rag/tools/**"
+      - "src/agent_rag/versioning/**"
+      - "tests/test_business_e2e_contract.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/business-e2e-gate.yml"
+      - "configs/agent.yaml"
+      - "configs/business_e2e.yaml"
+      - "configs/crawl.yaml"
+      - "configs/thresholds.yaml"
+      - "src/agent_rag/agent/**"
+      - "src/agent_rag/e2e/**"
+      - "src/agent_rag/freshness/**"
+      - "src/agent_rag/indexing/**"
+      - "src/agent_rag/knowledge/**"
+      - "src/agent_rag/quality/**"
+      - "src/agent_rag/storage/**"
+      - "src/agent_rag/tools/**"
+      - "src/agent_rag/versioning/**"
+      - "tests/test_business_e2e_contract.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: business-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  online-knowledge-closed-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      neo4j:
+        image: neo4j:5.26.28
+        env:
+          NEO4J_AUTH: neo4j/business_e2e_password
+        ports:
+          - 7687:7687
+      qdrant:
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+    env:
+      PYTHONPATH: src
+      APP_ENVIRONMENT: test
+      APP_RUNTIME_PROFILE: auto
+      NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: business_e2e_password
+      QDRANT_HOST: 127.0.0.1
+      QDRANT_PORT: "6333"
+      EMBEDDING_PROVIDER: siliconflow
+      EMBEDDING_DIM: "64"
+      RERANKER_MODE: first_stage_only
+      AGENT_ASYNC_INDEXING: "true"
+      INDEX_WORKER_ENABLED: "true"
+      FRESHNESS_WORKER_ENABLED: "true"
+      BUSINESS_E2E_OUTPUT: data/runtime/business-e2e/report.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked project dependencies
+        run: uv sync --locked --group dev
+
+      - name: Validate deterministic E2E contracts
+        run: uv run --no-sync pytest tests/test_business_e2e_contract.py -q
+
+      - name: Lint E2E implementation
+        run: >-
+          uv run --no-sync ruff check src/agent_rag/e2e
+          tests/test_business_e2e_contract.py
+
+      - name: Execute real-store business scenario
+        run: >-
+          uv run --no-sync agent-rag-business-e2e
+          --output "$BUSINESS_E2E_OUTPUT"
+          --runtime-dir data/runtime/business-e2e
+
+      - name: Upload business E2E evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: business-e2e-${{ github.sha }}
+          path: data/runtime/business-e2e/report.json
+          if-no-files-found: error
+          retention-days: 14

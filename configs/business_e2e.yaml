@@ -1,0 +1,21 @@
+schema_version: 1
+scenario_id: online-knowledge-closed-loop
+
+dependencies:
+  startup_timeout_seconds: 120
+  retry_interval_seconds: 2
+
+contract:
+  max_initial_pages_fetched: 1
+  expected_initial_jobs: 1
+  expected_retry_attempts: 1
+  max_reuse_pages_fetched: 0
+  max_reuse_origin_requests: 0
+  min_stable_blocks_after_update: 1
+  min_active_facts: 1
+  min_retired_facts: 1
+  max_external_model_calls: 0
+
+fixture:
+  canonical_host: e2e.test
+  path_prefix: /access/

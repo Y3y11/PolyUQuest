@@ -116,6 +116,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
 | Per-stage LLM model + temperature | `configs/llm.yaml` |
 | Router confidence cutoffs, retrieval thresholds | `configs/thresholds.yaml` |
 | Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
+| Deterministic business E2E contract | `configs/business_e2e.yaml` |
 | Runtime telemetry retention and SLO targets | `configs/observability.yaml` |
 | API authentication, RBAC keys, security audit retention | `.env` |
 | Entity alias dictionary | `configs/aliases.yaml` |
@@ -267,6 +268,36 @@ Neo4j, Qdrant, production secret, or external website. See
 and
 [`docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md`](docs/EVALUATION_GOVERNANCE_RELEASE_GATE_PRD.md).
 
+### Business end-to-end gate
+
+The deterministic evaluation gate scores frozen responses; it deliberately does
+not prove the live write path. A separate business E2E gate starts real Neo4j
+and Qdrant services and executes the complete online knowledge loop:
+
+```text
+cold query → trusted HTTP fetch → temporary grounded answer → SQLite Outbox
+→ injected partial Qdrant failure → restarted Index Worker recovery
+→ hot query with zero fetch → ETag refresh → DOM-diff update
+→ fact retirement/activation → idempotent Patch replay
+```
+
+Only the non-repeatable model boundary is deterministic. Agent orchestration,
+page quality, SQLite ledgers, Cypher, Qdrant vectors, freshness, incremental
+publication, fact temporality, and read-after-write checks use production code.
+No external API key is required.
+
+```bash
+docker compose -f compose.e2e.yml up -d --wait
+uv run agent-rag-business-e2e \
+  --output data/runtime/business-e2e/report.json \
+  --runtime-dir data/runtime/business-e2e
+```
+
+Local ports differ from the defaults; follow
+[`docs/BUSINESS_E2E_GATE_RUNBOOK.md`](docs/BUSINESS_E2E_GATE_RUNBOOK.md) for the
+required environment. The product contract and failure evidence schema are in
+[`docs/BUSINESS_E2E_GATE_PRD.md`](docs/BUSINESS_E2E_GATE_PRD.md).
+
 Changed pages are published with deterministic DOM Block Diff. Only modified,
 added, or missing-vector blocks are embedded; structurally relocated blocks
 reuse their existing vectors, and unchanged page metadata reuses the page
@@ -384,6 +415,7 @@ PolyUQuest/
 │   ├── kg/               # knowledge-graph extraction & resolution
 │   ├── knowledge/        # incremental fact delta + bitemporal history
 │   ├── crawler/          # web crawler + URL filter
+│   ├── e2e/              # deterministic real-store business gate
 │   ├── html_processing/  # DOM → block-tree cleaner
 │   └── llm/              # LLM client + Jinja prompt templates
 ├── frontend/             # Next.js 14 UI

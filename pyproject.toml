@@ -47,6 +47,7 @@ dev = [
 agent-rag-serve = "agent_rag.api.main:start"
 agent-rag-worker = "agent_rag.workers.main:start"
 agent-rag-container-check = "agent_rag.deployment.container_contract:main"
+agent-rag-business-e2e = "agent_rag.e2e.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_rag"]
