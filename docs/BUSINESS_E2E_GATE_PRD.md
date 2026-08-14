@@ -1,6 +1,6 @@
 # PolyUQuest 在线知识闭环业务 E2E 门禁 PRD
 
-> 迭代 16 · 2026-08-14 · 状态：实施中
+> 迭代 16 · 2026-08-14 · 状态：已实施并通过真实 Neo4j/Qdrant 业务门禁
 
 ## 1. 业务背景
 
@@ -183,6 +183,19 @@ Workflow 对 E2E、Agent、工具、索引、刷新、存储、版本、知识�
 | 一致性 | Block/Entity 跨存储 ID 一致 |
 | 幂等 | 重放前后 inventory 与事实计数相同 |
 | 外部模型调用 | 0 |
+
+### 9.1 实际验收结果
+
+GitHub Actions run [`31797771292`](https://github.com/Y3y11/PolyUQuest/actions/runs/31797771292) 在 Linux service containers 上通过，上传 artifact `9218040959`。机器可读报告状态为 `passed`，共 19 项合同检查，业务场景耗时 7,431 ms。
+
+- 冷查询抓取 1 页、获得 3 个 Evidence、Quality=`index`、创建 1 个 Job，并立即 answered；
+- 第一次 Qdrant mutation 按计划失败，Job=`retry`、Patch=`repair_required`，Neo4j 部分 Page 已存在；
+- 重建 SQLite Store 与 Index Worker 后恢复为 succeeded/published，3 个 Block 与 3 个向量一致，初始 active Fact=1；
+- 热查询与更新后查询均抓取 0 页、Origin 请求增量 0；整个场景只请求测试站点 2 次；
+- 页面 v2 产生 1 个 modified、2 个 metadata_changed Block，只生成 1/3 个 Block Embedding，2 个 same-ID 向量精确复用；
+- Knowledge Delta 读取 1 个 previous Fact、退休 1 个旧 Fact，最终 active=1、retired=1；
+- Block/Entity 的 Neo4j/Qdrant 差集均为 0，Patch 重放前后 inventory digest 与 Fact 统计相同；
+- LLM 调用、输入/输出 token 与远程 Reranker 调用均为 0。
 
 ## 10. 文件级修改计划
 
