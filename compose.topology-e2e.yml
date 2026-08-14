@@ -149,9 +149,9 @@ services:
     image: neo4j:5.26.28
     environment:
       NEO4J_AUTH: neo4j/topology_e2e_password
-    tmpfs:
-      - /data:size=512m
-      - /logs:size=64m
+    volumes:
+      - topology_neo4j_data:/data
+      - topology_neo4j_logs:/logs
     healthcheck:
       test:
         - CMD-SHELL
@@ -181,3 +181,5 @@ networks:
 volumes:
   topology_runtime:
   topology_cache:
+  topology_neo4j_data:
+  topology_neo4j_logs:

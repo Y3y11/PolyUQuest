@@ -175,6 +175,10 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
     assert services["api"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
     assert services["worker"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
     assert "cypher-shell" in " ".join(services["neo4j"]["healthcheck"]["test"])
+    assert "topology_neo4j_data:/data" in services["neo4j"]["volumes"]
+    assert "topology_neo4j_logs:/logs" in services["neo4j"]["volumes"]
+    assert "topology_neo4j_data" in compose["volumes"]
+    assert "topology_neo4j_logs" in compose["volumes"]
     assert "TOPOLOGY_API_AUTH_KEYS" in raw
     assert "topology-contract-reader" not in raw
     assert "topology-contract-admin" not in raw
