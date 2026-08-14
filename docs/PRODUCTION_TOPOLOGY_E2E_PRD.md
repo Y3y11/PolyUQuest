@@ -1,6 +1,6 @@
 # PolyUQuest 生产拓扑 E2E 与 Worker 接管门禁 PRD
 
-> 迭代 17 · 2026-08-14 · 状态：实施中
+> 迭代 17 · 2026-08-14 · 状态：已实现并通过 GitHub Linux 生产拓扑验收
 
 ## 1. 业务背景
 
@@ -192,6 +192,22 @@ Python driver 负责 Compose build/up、HTTP/SSE、状态轮询、SIGKILL/restar
 | 外部模型 | LLM/Reranker 调用为 0 |
 | 制品 | report/logs 失败时也上传 |
 
+### 9.1 远程验收结果
+
+GitHub Actions `Production Topology E2E Gate` 运行 `31802799541` 在提交
+`a963e13` 上通过，机器报告状态为 `passed`，场景耗时 67.001 秒，11 项检查全部成功：
+
+- API readiness 中 Neo4j、Qdrant、Embedding、BM25 与 startup 均为 ready；
+- 鉴权得到 missing=401、reader→operator=403，reader/admin 身份识别正确；
+- 冷查询只抓取 1 页并产生 1 个 pending Job；
+- 首个 Worker claim 后被 SIGKILL，2.021 秒后 heartbeat stale，Job 仍为 running；
+- 新 Worker 使用不同 instance ID 接管同一 Job，`total_attempts=2` 并发布成功；
+- 第一次热查询 0 fetch、origin delta=0、Job 总数仍为 1；
+- Fixture 切换 v2 后共有 2 个 succeeded Jobs、2 个已发布版本，Fact active=1、retired=1；
+- 更新后的热查询命中新事实且仍为 0 fetch；
+- 3 次查询 telemetry 的 LLM calls 与 billable tokens 均为 0；
+- 安全审计记录 allowed=69、unauthorized=1、forbidden=1、error=0、dropped=0。
+
 ## 10. 文件级修改计划
 
 新建：
@@ -203,6 +219,7 @@ Python driver 负责 Compose build/up、HTTP/SSE、状态轮询、SIGKILL/restar
 - `src/agent_rag/runtime.py`；
 - `src/agent_rag/e2e/topology_runtime.py`；
 - `src/agent_rag/e2e/fixture_app.py`；
+- `src/agent_rag/e2e/fixture_content.py`；
 - `src/agent_rag/e2e/topology_driver.py`；
 - `src/agent_rag/workers/status.py`；
 - `src/agent_rag/api/routes/worker_router.py`；
