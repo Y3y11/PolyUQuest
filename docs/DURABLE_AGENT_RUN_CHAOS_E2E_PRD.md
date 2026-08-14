@@ -1,6 +1,6 @@
 # PolyUQuest Durable Agent Run 生产故障 E2E 与运行健康 PRD
 
-> 迭代 20 · 2026-08-14 · 状态：本地实现与回归完成，等待 Linux 生产拓扑门禁
+> 迭代 20 · 2026-08-14 · 状态：实现、本地回归与 Linux 生产拓扑门禁全部完成
 
 ## 1. 业务背景
 
@@ -218,6 +218,14 @@ Frontend：生产构建、server-only BACKEND_API_URL、BFF secret file、exact 
 - production/topology 两份 Compose 均可完整展开；
 - 本机 Docker daemon 未运行，因此真实容器 SIGKILL 场景交由 GitHub Linux 门禁完成；
 - 全仓 Ruff 仍有 37 个本轮之外的历史问题，作为独立静态债务迭代处理，不混入故障恢复改造。
+
+远端验收结果（提交 `685aa80`，2026-08-14）：
+
+- Production Topology E2E Gate：run `31814711594`，passed；
+- 拓扑 Driver 输出 `status=passed`、14 checks、122,445 ms；相较原场景新增的 3 个 required checks 全部执行后才可完成；
+- 证据 artifact `production-topology-e2e-685aa80a48fd7eecfb4a7b29d68af90577eefd93` 已上传；
+- Business E2E Gate `31814711553`、Browser BFF SSE Gate `31814711559`、Container Supply Chain Gate `31814711598` 同时通过；
+- 因此既证明新 Durable chaos 路径，也证明原知识闭环、BFF 单项合同和镜像供应链无回归。
 
 ## 11. 文件级修改计划
 
