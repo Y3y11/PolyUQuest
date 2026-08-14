@@ -58,9 +58,12 @@ def test_bff_workflow_runs_build_scenario_artifacts_and_cleanup() -> None:
     assert "npm exec tsc -- --noEmit --incremental false" in workflow
     assert "npm run build" in workflow
     assert "openssl rand -hex 32" in workflow
+    assert 'sudo chown root:10001 "$secret_file"' in workflow
+    assert "sudo chmod 0440" in workflow
     assert "node frontend/scripts/bff-e2e-driver.mjs" in workflow
     assert "if: always()" in workflow
     assert "down -v --remove-orphans" in workflow
+    assert '"$RUNNER_TEMP"/*) sudo rm -f' in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
     assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow

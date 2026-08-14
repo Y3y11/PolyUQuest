@@ -185,7 +185,10 @@ export async function proxyBffRequest(
   let config: BffConfig;
   try {
     config = dependencies.config ?? getBffConfig();
-  } catch {
+  } catch (error) {
+    console.error("bff_configuration_invalid", {
+      error: error instanceof Error ? error.message : "unknown_error",
+    });
     return jsonError(503, "bff_not_configured");
   }
   const requestId =

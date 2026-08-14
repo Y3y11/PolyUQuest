@@ -136,6 +136,11 @@ Browser (untrusted input, no service secret)
 
 `NODE_ENV=production` 下没有 secret file 或 key 为空时 fail closed。development 可使用 `BFF_BACKEND_API_KEY`，也可连接关闭 API auth 的本地后端。
 
+普通 Compose 的 file secret 是 bind mount，宿主机文件必须允许非 root frontend
+（UID/GID 10001）读取。Linux 基线为 `root:10001`、`0440`；不能使用仅 root/部署用户
+可读的 `0600`，也不能放宽为全局可读 `0444`。配置加载失败只向浏览器返回稳定 503，
+服务端记录不含 raw key 的结构化原因。
+
 ### 6.4 SSE 透明流
 
 BFF 不解析 Agent 事件，不维护第二套 SSE schema。它只：
@@ -235,6 +240,8 @@ production Compose 调整：
 - **SSE 被平台缓冲**：设置 no-transform/no-buffering，并用多 chunk 时间证据验证；
 - **长 Agent 占用 Node connection**：有界 timeout、取消传播与并发/限流后续接入；
 - **secret/hash 不匹配**：readiness smoke test 必须实际通过 FastAPI reader route；
+- **file secret 权限不匹配**：Linux provisioning 固定 `root:10001/0440`，E2E 使用与生产
+  相同的非 root UID/GID 验证真实读取；
 - **catch-all 扩大攻击面**：完整正则 allowlist，拒绝未知 path/method，不转发用户鉴权头；
 - **Next build 读取运行时 secret**：配置延迟到请求时加载，不在 builder stage 要求 secret；
 - **本地开发复杂**：development 默认 backend URL + 无 key兼容匿名本地 API。

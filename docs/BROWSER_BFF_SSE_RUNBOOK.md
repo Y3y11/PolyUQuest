@@ -36,7 +36,8 @@ python -m agent_rag.security.cli --key-id operations-admin --role admin
 - 两条 hash-only record 以逗号连接写入 `API_AUTH_KEYS`；
 - frontend reader 的 raw key 单独写入受限文件，例如
   `D:\protected\polyuquest\frontend-reader.key`；
-- 文件只包含一行 raw key，限制为部署账号可读，不提交 Git；
+- 文件只包含一行 raw key，不提交 Git；Linux Compose 宿主机使用
+  `root:10001` 与 `0440`，只允许 root 和 frontend 容器组读取；
 - admin raw key 不交给 BFF，仅交给受控运维工具或 secret manager。
 
 `.env.production` 至少配置：
@@ -50,6 +51,18 @@ BFF_UPSTREAM_TIMEOUT_SECONDS=120
 
 Compose 把文件挂载为 `/run/secrets/bff_backend_api_key`。容器环境只能看到文件路径，
 `docker inspect` 不应出现 raw key。
+
+Linux 宿主机示例：
+
+```bash
+sudo chown root:10001 /etc/polyuquest/secrets/frontend-reader.key
+sudo chmod 0440 /etc/polyuquest/secrets/frontend-reader.key
+```
+
+普通 Compose 的 file secret 是 bind mount，会保留宿主机权限；如果仍使用 `0600`
+且文件属于部署用户/root，UID/GID 10001 的 frontend 会读不到文件并返回
+`503 bff_not_configured`。不要用 `0444` 绕过问题。Windows Docker Desktop 应在部署前
+进入生产 frontend 容器验证该路径可读，并确保宿主机 ACL 仅授予部署账号/Docker 服务。
 
 ## 3. 反向代理与网络
 
@@ -105,7 +118,9 @@ npm run build
 
 ### `503 bff_not_configured`
 
-检查 `BACKEND_API_URL`、`BFF_ALLOWED_ORIGINS`、secret mount 路径与文件内容。生产环境不会回退读取 `BFF_BACKEND_API_KEY`。
+检查 `BACKEND_API_URL`、`BFF_ALLOWED_ORIGINS`、secret mount 路径、文件内容和容器
+UID/GID 10001 的读取权限。生产环境不会回退读取 `BFF_BACKEND_API_KEY`；服务端日志会
+记录不包含 raw key 的 `bff_configuration_invalid` 原因。
 
 ### `502 backend_authentication_failed`
 

@@ -60,6 +60,11 @@ jobs:
           umask 077
           openssl rand -hex 32 > "$secret_file"
           secret_hash="$(sha256sum "$secret_file" | cut -d ' ' -f 1)"
+          # Compose file secrets are bind mounts and retain host ownership/mode.
+          # Keep the key unavailable to other users while allowing gid 10001 in
+          # the non-root frontend container to read it.
+          sudo chown root:10001 "$secret_file"
+          sudo chmod 0440 "$secret_file"
           echo "BFF_E2E_SECRET_FILE=$secret_file" >> "$GITHUB_ENV"
           echo "BFF_E2E_EXPECTED_KEY_SHA256=$secret_hash" >> "$GITHUB_ENV"
 
@@ -86,6 +91,15 @@ jobs:
         run: >-
           docker compose -f compose.bff-e2e.yml
           -p "$BFF_E2E_PROJECT" down -v --remove-orphans
+
+      - name: Remove ephemeral BFF reader secret
+        if: always()
+        run: |
+          case "${BFF_E2E_SECRET_FILE:-}" in
+            "$RUNNER_TEMP"/*) sudo rm -f -- "$BFF_E2E_SECRET_FILE" ;;
+            "") ;;
+            *) echo "refusing to remove secret outside RUNNER_TEMP" >&2; exit 1 ;;
+          esac
 
       - name: Upload BFF E2E evidence
         if: always()
