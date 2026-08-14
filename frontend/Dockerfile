@@ -7,8 +7,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM node:22.20.0-alpine AS builder
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1 \
-    NEXT_PUBLIC_API_URL=/api
+ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

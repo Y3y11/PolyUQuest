@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+// Browser requests always use the same-origin Next.js BFF. Backend addresses
+// and service credentials are server-only runtime configuration.
+const API_BASE = "/api";
 
 export interface Turn {
   user: string;

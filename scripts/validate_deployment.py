@@ -47,6 +47,10 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         networks = set(_list(services.get(name, {}).get("networks")))
         if networks != {"backend"}:
             errors.append(f"{name}: database must remain isolated on backend only")
+    frontend = services.get("frontend", {})
+    frontend_networks = set(_list(frontend.get("networks")))
+    if frontend_networks != {"frontend", "backend"}:
+        errors.append("frontend: must join public frontend and private backend networks")
 
     for name in ("api", "worker", "frontend"):
         service = services.get(name, {})
@@ -90,11 +94,28 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
     if api_environment.get("FRESHNESS_WORKER_ENABLED") != "false":
         errors.append("api must disable the in-process freshness worker")
 
+    frontend_environment = frontend.get("environment", {})
+    if frontend_environment.get("BACKEND_API_URL") != "http://api:8000/api":
+        errors.append("frontend: BACKEND_API_URL must use the private API service")
+    if frontend_environment.get("BFF_BACKEND_API_KEY_FILE") != (
+        "/run/secrets/bff_backend_api_key"
+    ):
+        errors.append("frontend: BFF key must be read from the mounted secret file")
+    if "BFF_BACKEND_API_KEY" in frontend_environment:
+        errors.append("frontend: raw BFF key must not be stored in container environment")
+    if "bff_backend_api_key" not in _list(frontend.get("secrets")):
+        errors.append("frontend: bff_backend_api_key secret mount is required")
+    secret = payload.get("secrets", {}).get("bff_backend_api_key", {})
+    if "${BFF_BACKEND_API_KEY_FILE:?" not in str(secret.get("file", "")):
+        errors.append("bff_backend_api_key must require an operator-provided host file")
+
     compose_text = compose_path.read_text(encoding="utf-8")
     required_variables = (
         "${API_AUTH_KEYS:?",
         "${NEO4J_PASSWORD:?",
         "${CORS_ALLOW_ORIGINS:?",
+        "${BFF_ALLOWED_ORIGINS:?",
+        "${BFF_BACKEND_API_KEY_FILE:?",
     )
     for marker in required_variables:
         if marker not in compose_text:

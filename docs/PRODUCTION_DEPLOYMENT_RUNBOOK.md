@@ -1,6 +1,6 @@
 # PolyUQuest 生产部署与恢复 Runbook
 
-本 Runbook 对应 `compose.production.yml`。它是单机 Compose 生产基线，默认由同机的 TLS/SSO/API Gateway 对外提供入口；Neo4j 与 Qdrant 不发布宿主机端口，API 与前端也只监听 `127.0.0.1`。
+本 Runbook 对应 `compose.production.yml`。它是单机 Compose 生产基线，默认由同机的 TLS/SSO/API Gateway 把全部浏览器流量转发到 Next.js；Next.js BFF 从 Docker secret 注入 reader key，再通过 internal backend network 调用 FastAPI。Neo4j 与 Qdrant 不发布宿主机端口，API 与前端也只监听 `127.0.0.1`。
 
 API/Worker 通过独立 egress 网络访问模型供应商和可信网页；生产防火墙应限制
 允许的域名、协议和 DNS，并记录异常出站。Neo4j/Qdrant 只加入 internal backend。
@@ -9,18 +9,19 @@ API/Worker 通过独立 egress 网络访问模型供应商和可信网页；生�
 
 - Docker Engine 与 Docker Compose plugin 可用；
 - 建议至少 12 GB 可用内存、4 vCPU，并为模型缓存和图/向量数据预留磁盘；
-- 已有受管的 TLS/SSO 网关，能够将应用流量转发到前端，并将 `/api` 转发到 FastAPI；
-- 网关或受信服务端负责注入 `X-API-Key`，不得把长期 key 编译到浏览器 JavaScript；
+- 已有受管的 TLS/SSO 网关，能够将所有应用流量（包括 `/api`）转发到前端；
+- `/api` 不能绕过 Next.js BFF 直达 FastAPI；BFF 负责注入 reader key，不得把长期 key 编译到浏览器 JavaScript；
 - 真实 `.env.production` 存储在密钥管理系统或受限目录，不提交 Git。
 
 ## 2. 准备配置
 
 ```powershell
 Copy-Item deploy/.env.production.example deploy/.env.production
-python -m agent_rag.security.cli --key-id gateway-admin --role admin
+python -m agent_rag.security.cli --key-id frontend-reader --role reader
+python -m agent_rag.security.cli --key-id operations-admin --role admin
 ```
 
-把生成的 hash-only record 写入 `API_AUTH_KEYS`，原始 key 只交给网关或受信调用方。必须替换示例中的 Neo4j 密码、DeepSeek/SiliconFlow key、CORS origin 和镜像标签。
+把两条 hash-only record 写入 `API_AUTH_KEYS`。reader raw key 单独写入受限文件，并把路径配置为 `BFF_BACKEND_API_KEY_FILE`；admin raw key 只交给运维端。必须替换示例中的 Neo4j 密码、DeepSeek/SiliconFlow key、CORS/BFF origin、secret file 路径和镜像标签。完整步骤见 `docs/BROWSER_BFF_SSE_RUNBOOK.md`。
 
 生产应用会二次校验以下条件并 fail-fast：认证不能关闭、Neo4j 不能使用开发默认密码、reload 不能开启、当前远程 LLM/embedding provider 必须有凭证。
 
@@ -44,7 +45,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml ps
 docker compose --env-file deploy/.env.production -f compose.production.yml logs --tail 200 worker api
 ```
 
-验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready`；Neo4j/Qdrant 无宿主机端口；用一条受权查询验证读取，再用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。
+验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF SSE 逐步返回并关联 BFF/API request IDs；再用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。
 
 ## 5. 常规升级
 
@@ -101,6 +102,6 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 ## 9. 已知限制与下一阶段
 
 - 这是单机冷备份方案，不提供零停机与跨区容灾。
-- API key 只是服务边界；企业浏览器访问仍需要外部 SSO/BFF 或 Gateway。
+- BFF 的共享 reader key 只是工作负载边界；企业浏览器访问仍需要外部 SSO/ingress 识别最终用户。
 - Compose 资源限制需要结合实际 corpus、模型与并发压测校准。
 - 下一阶段应引入镜像 digest/SBOM/签名、CI BuildKit、集中日志指标、Neo4j/Qdrant 官方在线 snapshot/backup 和自动恢复演练。

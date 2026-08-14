@@ -94,16 +94,17 @@ code does not import it; local BGE-M3 embedding uses Sentence Transformers.
 
 ```bash
 cd frontend
-npm install
+npm ci
+cp .env.local.example .env.local
 npm run dev                     # → http://localhost:3000
 ```
 
-The frontend talks to the backend at `http://localhost:8000/api` by default.
-To point it elsewhere, set `NEXT_PUBLIC_API_URL` before `npm run dev`:
-
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
-```
+The browser always uses same-origin `/api`. A Next.js Route Handler BFF reads
+the server-only `BACKEND_API_URL`, injects an optional development reader key,
+and streams FastAPI SSE without exposing backend credentials to the browser.
+Production requires a Docker secret file and an exact Origin allowlist; never
+use `NEXT_PUBLIC_*` for the backend URL or service key. See
+[`docs/BROWSER_BFF_SSE_RUNBOOK.md`](docs/BROWSER_BFF_SSE_RUNBOOK.md).
 
 ---
 
@@ -145,10 +146,11 @@ pause/resume, execute repairs, and inspect the security audit. Health probes
 remain public.
 
 Do not put a static service key in `NEXT_PUBLIC_*`, browser storage, or a
-frontend bundle. A production browser deployment should use enterprise
-SSO/session handling in a BFF or API gateway, which injects the service key on
-the server side. See
-[`docs/API_SECURITY_RBAC_AUDIT_PRD.md`](docs/API_SECURITY_RBAC_AUDIT_PRD.md).
+frontend bundle. The production Next.js BFF injects only a reader key from a
+secret file and exposes an explicit read/query route allowlist. Enterprise SSO
+or an authenticated ingress is still required to identify the final user; the
+BFF does not turn a shared workload key into user identity. See
+[`docs/BROWSER_BFF_SSE_PRD.md`](docs/BROWSER_BFF_SSE_PRD.md).
 
 ---
 
