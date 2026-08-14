@@ -207,6 +207,20 @@ def validate_dockerfiles(root: Path, policy: dict[str, Any]) -> list[str]:
             errors.append(f"{relative}: runtime user must be {uid_gid}")
         if re.search(r"(?im)^\s*FROM\s+\S+:latest(?:\s|$)", text):
             errors.append(f"{relative}: mutable latest base image is forbidden")
+
+    backend_path = root / "Dockerfile"
+    if backend_path.is_file():
+        backend = backend_path.read_text(encoding="utf-8")
+        if "apt-get upgrade -y" not in backend:
+            errors.append("Dockerfile: runtime OS security upgrade is missing")
+
+    frontend_path = root / "frontend" / "Dockerfile"
+    if frontend_path.is_file():
+        frontend = frontend_path.read_text(encoding="utf-8")
+        if "apk upgrade --no-cache" not in frontend:
+            errors.append("frontend/Dockerfile: runtime OS security upgrade is missing")
+        if "rm -rf /usr/local/lib/node_modules/npm" not in frontend:
+            errors.append("frontend/Dockerfile: unused runtime npm toolchain must be removed")
     return errors
 
 

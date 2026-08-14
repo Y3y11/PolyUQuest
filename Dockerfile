@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.12.11-slim-bookworm AS runtime
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install --no-install-recommends -y ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 app \

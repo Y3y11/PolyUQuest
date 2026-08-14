@@ -119,6 +119,24 @@ class SupplyChainPolicyTests(unittest.TestCase):
             self.validator.validate_policy(policy),
         )
 
+    def test_validator_requires_runtime_security_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "frontend").mkdir()
+            shutil.copy2(ROOT / "Dockerfile", root / "Dockerfile")
+            shutil.copy2(ROOT / "frontend" / "Dockerfile", root / "frontend" / "Dockerfile")
+            backend = root / "Dockerfile"
+            backend.write_text(
+                backend.read_text(encoding="utf-8").replace("apt-get upgrade -y", "apt-get check"),
+                encoding="utf-8",
+            )
+
+            errors = self.validator.validate_dockerfiles(
+                root, self.validator.load_policy(ROOT)
+            )
+
+        self.assertIn("Dockerfile: runtime OS security upgrade is missing", errors)
+
 
 if __name__ == "__main__":
     unittest.main()
