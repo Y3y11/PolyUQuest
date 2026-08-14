@@ -1,6 +1,6 @@
 # PolyUQuest 生产运行能力分层与镜像瘦身 PRD
 
-> 迭代 15 · 2026-08-14 · 状态：实施中
+> 迭代 15 · 2026-08-14 · 状态：已完成并通过 GitHub Linux 双 Profile 制品验收
 
 ## 1. 背景
 
@@ -208,6 +208,37 @@ Container contract JSON schema 升级，增加：
 3. Sentence Transformers 与 Torch 可导入，FlagEmbedding 不存在；
 4. SBOM/CVE artifact 上传；
 5. fixable CRITICAL 为 0。
+
+### 9.4 实际验收结果
+
+代码提交 `12ed071` 后，自动 remote 门禁与手动 local-ml 门禁均在 GitHub Linux runner 完成真实 BuildKit 构建、只读 non-root contract、SBOM、CVE 和 artifact 验收：
+
+- [自动 remote 门禁 run 31793909535](https://github.com/Y3y11/PolyUQuest/actions/runs/31793909535) 全部成功；
+- [手动双 Profile 门禁 run 31794187307](https://github.com/Y3y11/PolyUQuest/actions/runs/31794187307) 全部成功；
+- 两个 Profile 均为实际镜像证据，不以宿主机包状态或 Dockerfile 静态文本代替。
+
+| 指标 | 迭代 14 单一镜像 | 迭代 15 `remote` | 改进 |
+|---|---:|---:|---:|
+| 后端镜像大小 | 5,910,698,673 bytes | 516,736,548 bytes | 减少 91.26% |
+| CycloneDX 组件数 | 256 | 177 | 减少 30.86% |
+| 绿色 `build-contract-scan` | 17m57s | 1m52s | 减少 89.60% |
+| HIGH 漏洞 | 9 | 6 | 减少 3 项 |
+| CRITICAL / fixable CRITICAL | 0 / 0 | 0 / 0 | 持续通过 |
+
+`remote` artifact 的 14 项 contract 全部通过：marker、声明与 effective profile 均为 `remote`，provider 为 `siliconflow`，Sentence Transformers、Torch 和 FlagEmbedding 均不可用。负向 contract 使用 `EMBEDDING_PROVIDER=local` 启动同一镜像时按预期失败，证明配置不能伪装镜像能力。实际大小仅占 1.5 GB 预算的 34.45%。
+
+| `local-ml` 验收项 | 实际结果 |
+|---|---|
+| Linux BuildKit / contract | passed；14 项检查 |
+| Profile / provider | `local-ml` / `local` |
+| Sentence Transformers / Torch | present / present |
+| FlagEmbedding | absent |
+| 镜像大小 | 5,640,402,724 bytes |
+| CycloneDX 组件数 | 230 |
+| HIGH / CRITICAL / fixable CRITICAL | 6 / 0 / 0 |
+| Job 总耗时 | 15m36s；其中构建 12m30s、扫描 2m44s |
+
+`local-ml` 仍是大型制品，因此保持手动触发是合理的：它证明本地能力没有被镜像瘦身误删，但不会让可选能力占据每次提交的主交付路径。
 
 ## 10. 文件级修改计划
 
