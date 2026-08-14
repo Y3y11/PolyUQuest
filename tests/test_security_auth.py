@@ -59,6 +59,7 @@ class SecurityConfigurationTests(unittest.TestCase):
             llm_provider="deepseek",
             deepseek_api_key="deepseek-test-key",
             embedding_provider="local",
+            agent_run_worker_enabled=False,
         )
         self.assertEqual(settings.api_auth_mode, "api_key")
         self.assertNotIn("admin-secret", settings.api_auth_keys)

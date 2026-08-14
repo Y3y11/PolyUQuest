@@ -21,6 +21,16 @@ const ROUTES: readonly RouteRule[] = [
   { methods: new Set(["POST"]), pattern: /^query$/ },
   { methods: new Set(["POST"]), pattern: /^query\/stream$/ },
   { methods: new Set(["POST"]), pattern: /^agent\/query\/stream$/ },
+  { methods: new Set(["POST"]), pattern: /^agent\/runs$/ },
+  { methods: new Set(["GET"]), pattern: /^agent\/runs\/run-[a-f0-9]{32}$/ },
+  {
+    methods: new Set(["GET"]),
+    pattern: /^agent\/runs\/run-[a-f0-9]{32}\/events$/,
+  },
+  {
+    methods: new Set(["POST"]),
+    pattern: /^agent\/runs\/run-[a-f0-9]{32}\/cancel$/,
+  },
   { methods: new Set(["GET"]), pattern: /^graph\/stats$/ },
   { methods: new Set(["POST"]), pattern: /^graph\/data$/ },
   { methods: new Set(["GET"]), pattern: /^graph\/neighbors\/[^/]{1,512}$/ },
@@ -216,6 +226,20 @@ export async function proxyBffRequest(
   });
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("Content-Type", contentType);
+  const idempotencyKey = request.headers.get("idempotency-key");
+  if (idempotencyKey && path === "agent/runs") {
+    if (!/^[A-Za-z0-9._~-]{16,128}$/.test(idempotencyKey)) {
+      return jsonError(400, "idempotency_key_invalid", requestId);
+    }
+    headers.set("Idempotency-Key", idempotencyKey);
+  }
+  const lastEventId = request.headers.get("last-event-id");
+  if (lastEventId && /\/events$/.test(path)) {
+    if (!/^\d{1,20}$/.test(lastEventId)) {
+      return jsonError(400, "last_event_id_invalid", requestId);
+    }
+    headers.set("Last-Event-ID", lastEventId);
+  }
   if (config.backendApiKey) headers.set("X-API-Key", config.backendApiKey);
 
   const upstreamController = new AbortController();

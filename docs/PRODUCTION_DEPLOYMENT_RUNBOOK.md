@@ -45,7 +45,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml ps
 docker compose --env-file deploy/.env.production -f compose.production.yml logs --tail 200 worker api
 ```
 
-验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF SSE 逐步返回并关联 BFF/API request IDs；再用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。
+验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready` 且 capabilities 包含 `agent-run`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF 先创建 durable Run，再通过带事件 ID 的 SSE 逐步返回并关联 BFF/API request IDs；刷新页面后应恢复同一 run_id，而不是重新执行。最后用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。详见 `docs/DURABLE_AGENT_RUN_RUNBOOK.md`。
 
 ## 5. 常规升级
 
@@ -95,7 +95,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 
 - 仅应用故障：把镜像标签改回上一版并 `up -d api worker frontend`，不恢复数据。
 - schema 或写入不兼容：停止服务，确认当前数据是否需要额外留档，再恢复升级前备份。
-- Worker 卡住：先查看当前租约与 outbox；`docker compose stop worker` 会等待 45 秒。超时取消后，由幂等 patch/outbox 和下一次启动恢复未完成工作。
+- Worker 卡住：先查看 Agent Run、Index Job 当前租约与 outbox；`docker compose stop worker` 会等待 75 秒。超时取消后，Agent Run 由 lease 重新执行，知识发布由幂等 patch/outbox 和下一次启动恢复。
 - API live 正常但 ready 失败：检查 embedding warm-up、Neo4j/Qdrant 连通性和模型凭证，禁止仅靠重启掩盖持续错误。
 - 磁盘不足：先停止写入，扩容或迁移卷；不要手工删除 Neo4j/Qdrant 文件。
 

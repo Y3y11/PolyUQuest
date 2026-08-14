@@ -13,6 +13,7 @@ import structlog
 from agent_rag.config import settings
 from agent_rag.freshness.worker import freshness_worker_lifespan
 from agent_rag.indexing.worker import index_worker_lifespan
+from agent_rag.runs.worker import agent_run_worker_lifespan
 from agent_rag.workers.bootstrap import bootstrap_background_state
 from agent_rag.workers.status import worker_status_store
 
@@ -47,17 +48,23 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
     await asyncio.to_thread(prepare_process_runtime)
     await bootstrap_background_state()
     async with AsyncExitStack() as stack:
+        agent_run_worker = await stack.enter_async_context(agent_run_worker_lifespan())
         index_worker = await stack.enter_async_context(index_worker_lifespan())
         freshness_worker = await stack.enter_async_context(freshness_worker_lifespan())
-        if index_worker is None and freshness_worker is None:
+        if (
+            agent_run_worker is None
+            and index_worker is None
+            and freshness_worker is None
+        ):
             raise RuntimeError(
-                "standalone worker has no enabled loops; enable INDEX_WORKER_ENABLED "
-                "or FRESHNESS_WORKER_ENABLED"
+                "standalone worker has no enabled loops; enable AGENT_RUN_WORKER_ENABLED, "
+                "INDEX_WORKER_ENABLED, or FRESHNESS_WORKER_ENABLED"
             )
         instance_id = f"worker-{uuid.uuid4().hex[:12]}"
         capabilities = [
             name
             for name, enabled in (
+                ("agent-run", agent_run_worker is not None),
                 ("index", index_worker is not None),
                 ("freshness", freshness_worker is not None),
             )
@@ -80,6 +87,7 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
         logger.info(
             "worker_process_ready",
             instance_id=instance_id,
+            agent_run_worker=agent_run_worker is not None,
             index_worker=index_worker is not None,
             freshness_worker=freshness_worker is not None,
         )

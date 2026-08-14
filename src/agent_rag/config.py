@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     agent_repair_max_patches: int = 25
     agent_patch_max_attempts: int = 5
     agent_async_indexing: bool = True
+    agent_run_store_path: str = "data/runtime/agent_runs.sqlite3"
+    agent_run_worker_enabled: bool = True
+    agent_run_worker_poll_seconds: float = 0.25
+    agent_run_lease_seconds: int = 120
+    agent_run_max_attempts: int = 2
+    agent_run_retry_base_seconds: float = 2.0
+    agent_run_retention_days: int = 7
+    agent_run_event_poll_seconds: float = 0.25
+    agent_run_sse_keepalive_seconds: float = 15.0
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -166,6 +175,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "INDEX_WORKER_ENABLED=true requires AGENT_ASYNC_INDEXING=true"
             )
+        if self.agent_run_worker_poll_seconds <= 0:
+            raise ValueError("AGENT_RUN_WORKER_POLL_SECONDS must be positive")
+        if self.agent_run_lease_seconds <= 0:
+            raise ValueError("AGENT_RUN_LEASE_SECONDS must be positive")
+        if self.agent_run_max_attempts <= 0:
+            raise ValueError("AGENT_RUN_MAX_ATTEMPTS must be positive")
+        if self.agent_run_retry_base_seconds < 0:
+            raise ValueError("AGENT_RUN_RETRY_BASE_SECONDS cannot be negative")
+        if self.agent_run_retention_days <= 0:
+            raise ValueError("AGENT_RUN_RETENTION_DAYS must be positive")
+        if self.agent_run_event_poll_seconds <= 0:
+            raise ValueError("AGENT_RUN_EVENT_POLL_SECONDS must be positive")
+        if self.agent_run_sse_keepalive_seconds <= 0:
+            raise ValueError("AGENT_RUN_SSE_KEEPALIVE_SECONDS must be positive")
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:
@@ -208,6 +231,14 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "API_AUTH_MODE=disabled is not allowed in APP_ENVIRONMENT=production"
+            )
+        if (
+            self.app_environment == "production"
+            and self.app_process_role == "api"
+            and self.agent_run_worker_enabled
+        ):
+            raise ValueError(
+                "production API must set AGENT_RUN_WORKER_ENABLED=false"
             )
         if self.app_environment == "production":
             if self.app_runtime_profile == "auto":

@@ -23,8 +23,10 @@ import TopNav from "@/components/TopNav";
 import PersonaPicker from "@/components/PersonaPicker";
 import SuggestionBubbles from "@/components/SuggestionBubbles";
 import {
-  agentQueryStreamAPI,
+  cancelAgentRunAPI,
+  createAgentRunAPI,
   recentHistory,
+  streamAgentRunEventsAPI,
   type AgentActivity,
   type AgentAction,
   type AgentAssessment,
@@ -38,6 +40,40 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   agentActivity?: AgentActivity[];
+}
+
+interface ActiveAgentRun {
+  runId: string;
+  query: string;
+  lastEventId: number;
+}
+
+const ACTIVE_AGENT_RUN_KEY = "polyuquest.active-agent-run.v1";
+
+function persistActiveRun(run: ActiveAgentRun | null): void {
+  if (run) {
+    sessionStorage.setItem(ACTIVE_AGENT_RUN_KEY, JSON.stringify(run));
+  } else {
+    sessionStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
+  }
+}
+
+function restoreActiveRun(): ActiveAgentRun | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_AGENT_RUN_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<ActiveAgentRun>;
+    if (!/^run-[a-f0-9]{32}$/.test(value.runId || "")) return null;
+    if (typeof value.query !== "string" || !value.query.trim()) return null;
+    return {
+      runId: value.runId as string,
+      query: value.query,
+      lastEventId:
+        typeof value.lastEventId === "number" ? value.lastEventId : 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function updateLatestAssistant(
@@ -212,6 +248,7 @@ export default function HomePage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const activeRunRef = useRef<ActiveAgentRun | null>(null);
 
   // store slice — granular selectors keep rerenders local
   const isLoading = useQueryStore((s) => s.isStreaming);
@@ -256,28 +293,11 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSubmit = async (override?: string) => {
-    const raw = (override ?? input).trim();
-    if (!raw || isLoading) return;
-
-    const userMsg = raw;
-    setInput("");
-    // Derive the history *before* we push the new user turn into `messages`
-    // — the contextualizer should see only completed prior pairs.
-    const history = recentHistory(messages, 3);
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
-    setLastResponse(null);
-    setLiveAnswer("");
-    beginStream();
-
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: "", agentActivity: [] },
-    ]);
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
+  const consumeAgentRun = async (
+    run: ActiveAgentRun,
+    ctrl: AbortController,
+    replayFromStart = false
+  ) => {
     let collectedBlocks: BlockRef[] = [];
     let collectedTrace: PipelineStep[] = [];
     let mode = "";
@@ -292,10 +312,9 @@ export default function HomePage() {
       );
     };
 
-    try {
-      await agentQueryStreamAPI(
-        userMsg,
-        {
+    await streamAgentRunEventsAPI(
+      run.runId,
+      {
           onRouting: (data) => {
             mode = data.mode;
             setRouting({
@@ -349,6 +368,8 @@ export default function HomePage() {
               elapsed_seconds: elapsed,
               pipeline_trace: fullTrace,
             });
+            activeRunRef.current = null;
+            persistActiveRun(null);
           },
           onError: (detail) => {
             setMessages((prev) => {
@@ -357,11 +378,70 @@ export default function HomePage() {
                 content: "Agent 执行失败：" + detail,
               }));
             });
+            activeRunRef.current = null;
+            persistActiveRun(null);
           },
-        },
-        ctrl.signal,
-        history
+      },
+      ctrl.signal,
+      {
+          after: replayFromStart ? 0 : run.lastEventId,
+          onCursor: (lastEventId) => {
+            const current = activeRunRef.current;
+            if (!current || current.runId !== run.runId) return;
+            const updated = { ...current, lastEventId };
+            activeRunRef.current = updated;
+            persistActiveRun(updated);
+          },
+          onReconnect: (attempt) => {
+            appendActivity({
+              kind: "action",
+              action: {
+                sequence: 0,
+                action: "agent.stream_reconnect",
+                status: "started",
+                duration_ms: 0,
+                details: { attempt },
+              },
+            });
+          },
+      }
+    );
+  };
+
+  const handleSubmit = async (override?: string) => {
+    const raw = (override ?? input).trim();
+    if (!raw || isLoading) return;
+
+    const userMsg = raw;
+    setInput("");
+    const history = recentHistory(messages, 3);
+    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setLastResponse(null);
+    setLiveAnswer("");
+    beginStream();
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: "", agentActivity: [] },
+    ]);
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    try {
+      const { submission } = await createAgentRunAPI(
+        userMsg,
+        history,
+        undefined,
+        ctrl.signal
       );
+      const active = {
+        runId: submission.run_id,
+        query: userMsg,
+        lastEventId: 0,
+      };
+      activeRunRef.current = active;
+      persistActiveRun(active);
+      await consumeAgentRun(active, ctrl);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         setMessages((prev) => {
@@ -378,9 +458,50 @@ export default function HomePage() {
     }
   };
 
-  const handleStop = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+  useEffect(() => {
+    const restored = restoreActiveRun();
+    if (!restored) return;
+    activeRunRef.current = restored;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setMessages([
+      { role: "user", content: restored.query },
+      { role: "assistant", content: "", agentActivity: [] },
+    ]);
+    setLastResponse(null);
+    setLiveAnswer("");
+    beginStream();
+    void consumeAgentRun(restored, ctrl, true)
+      .catch((error) => {
+        if ((error as Error).name !== "AbortError") {
+          setMessages((previous) =>
+            updateLatestAssistant(previous, (message) => ({
+              ...message,
+              content: "Agent 任务恢复失败，可刷新页面再次连接。",
+            }))
+          );
+        }
+      })
+      .finally(() => {
+        endStream();
+        if (abortRef.current === ctrl) abortRef.current = null;
+      });
+    return () => ctrl.abort();
+    // Resume exactly once for each page mount. The stream is replayed from
+    // event 0 so a browser refresh reconstructs the visible audit trail.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleStop = useCallback(async () => {
+    const active = activeRunRef.current;
+    try {
+      if (active) await cancelAgentRunAPI(active.runId);
+    } finally {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      activeRunRef.current = null;
+      persistActiveRun(null);
+    }
   }, []);
 
   const handleBubblePick = useCallback(
@@ -408,8 +529,12 @@ export default function HomePage() {
   );
 
   const handleNewChat = useCallback(() => {
+    const active = activeRunRef.current;
+    if (active) void cancelAgentRunAPI(active.runId).catch(() => undefined);
     abortRef.current?.abort();
     abortRef.current = null;
+    activeRunRef.current = null;
+    persistActiveRun(null);
     setMessages([]);
     setLastResponse(null);
     setLiveAnswer("");

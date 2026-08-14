@@ -80,12 +80,17 @@ def test_worker_process_registers_heartbeats_and_stops_cleanly(monkeypatch) -> N
     async def freshness_lifespan():
         yield None
 
+    @asynccontextmanager
+    async def agent_run_lifespan():
+        yield None
+
     async def bootstrap() -> None:
         return None
 
     monkeypatch.setattr(worker_main, "worker_status_store", FakeStatusStore())
     monkeypatch.setattr(worker_main, "index_worker_lifespan", index_lifespan)
     monkeypatch.setattr(worker_main, "freshness_worker_lifespan", freshness_lifespan)
+    monkeypatch.setattr(worker_main, "agent_run_worker_lifespan", agent_run_lifespan)
     monkeypatch.setattr(worker_main, "bootstrap_background_state", bootstrap)
     monkeypatch.setattr(runtime, "prepare_process_runtime", lambda: None)
     monkeypatch.setattr(worker_main.settings, "worker_heartbeat_seconds", 0.005)

@@ -92,6 +92,40 @@ export interface AgentQueryResponse {
   elapsed_seconds: number;
 }
 
+export type AgentRunStatus =
+  | "queued"
+  | "running"
+  | "retry"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AgentRunSubmission {
+  run_id: string;
+  status: AgentRunStatus;
+  created: boolean;
+  status_url: string;
+  events_url: string;
+  cancel_url: string;
+}
+
+export interface AgentRunSnapshot {
+  run_id: string;
+  query: string;
+  status: AgentRunStatus;
+  attempts: number;
+  max_attempts: number;
+  cancel_requested: boolean;
+  last_event_id: number;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error_code: string | null;
+  error: string | null;
+  result: AgentQueryResponse | null;
+}
+
 export type AgentActivity =
   | { kind: "action"; action: AgentAction }
   | { kind: "assessment"; assessment: AgentAssessment }
@@ -236,25 +270,31 @@ export interface AgentStreamCallbacks {
   onError?: (detail: string) => void;
 }
 
-interface ParsedEvent {
+export interface ParsedEvent {
+  id: number | null;
   event: string;
   data: string;
 }
 
-function* parseSSE(buffer: string): Generator<ParsedEvent> {
-  const blocks = buffer.split("\n\n");
+export function* parseSSE(buffer: string): Generator<ParsedEvent> {
+  const blocks = buffer.replaceAll("\r\n", "\n").split("\n\n");
   for (const block of blocks) {
     if (!block.trim()) continue;
+    if (block.trimStart().startsWith(":")) continue;
+    let id: number | null = null;
     let event = "message";
     const dataLines: string[] = [];
     for (const line of block.split("\n")) {
-      if (line.startsWith("event:")) {
+      if (line.startsWith("id:")) {
+        const rawId = line.slice("id:".length).trim();
+        id = /^\d+$/.test(rawId) ? Number(rawId) : null;
+      } else if (line.startsWith("event:")) {
         event = line.slice("event:".length).trim();
       } else if (line.startsWith("data:")) {
         dataLines.push(line.slice("data:".length).trim());
       }
     }
-    yield { event, data: dataLines.join("\n") };
+    yield { id, event, data: dataLines.join("\n") };
   }
 }
 
@@ -458,6 +498,218 @@ export async function agentQueryStreamAPI(
   if (pending.trim()) {
     for (const event of parseSSE(pending)) {
       dispatch(event.event, event.data);
+    }
+  }
+}
+
+function dispatchAgentEvent(
+  event: string,
+  raw: string,
+  callbacks: AgentStreamCallbacks
+): void {
+  let data: unknown = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = raw;
+  }
+  switch (event) {
+    case "run_started":
+      callbacks.onRunStarted?.(data as { run_id: string; query: string });
+      break;
+    case "action":
+      callbacks.onAction?.(data as AgentAction);
+      break;
+    case "routing":
+      callbacks.onRouting?.(
+        data as {
+          mode: string;
+          alt_mode: string | null;
+          reasoning: string;
+          confidence: number;
+          source: string;
+        }
+      );
+      break;
+    case "evidence": {
+      const blocks = ((data as { blocks?: AgentEvidenceBlock[] })?.blocks || []).map(
+        toBlockRef
+      );
+      callbacks.onEvidence?.(blocks);
+      break;
+    }
+    case "assessment":
+      callbacks.onAssessment?.(data as AgentAssessment);
+      break;
+    case "done":
+      callbacks.onDone?.(data as AgentQueryResponse);
+      break;
+    case "error":
+      callbacks.onError?.(
+        (data as { detail?: string })?.detail || "Agent stream error"
+      );
+      break;
+  }
+}
+
+function durableRequestBody(query: string, history: Turn[]): string {
+  return JSON.stringify({
+    query,
+    mode: "auto",
+    history,
+    explore_web: true,
+    persist_discoveries: true,
+    freshness: "auto",
+    budget: {
+      max_iterations: 3,
+      max_pages: 5,
+      max_depth: 2,
+      max_seconds: 90,
+    },
+  });
+}
+
+export function createAgentRunIdempotencyKey(): string {
+  return `browser-${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+export async function createAgentRunAPI(
+  query: string,
+  history: Turn[] = [],
+  idempotencyKey: string = createAgentRunIdempotencyKey(),
+  signal?: AbortSignal
+): Promise<{ submission: AgentRunSubmission; idempotencyKey: string }> {
+  const submission = await apiFetch<AgentRunSubmission>(`${API_BASE}/agent/runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+    },
+    body: durableRequestBody(query, history),
+    signal,
+  });
+  return { submission, idempotencyKey };
+}
+
+export async function getAgentRunAPI(
+  runId: string,
+  signal?: AbortSignal
+): Promise<AgentRunSnapshot> {
+  return apiFetch<AgentRunSnapshot>(`${API_BASE}/agent/runs/${runId}`, {
+    cache: "no-store",
+    signal,
+  });
+}
+
+export async function cancelAgentRunAPI(
+  runId: string,
+  signal?: AbortSignal
+): Promise<AgentRunSnapshot> {
+  return apiFetch<AgentRunSnapshot>(`${API_BASE}/agent/runs/${runId}/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    signal,
+  });
+}
+
+export interface DurableAgentStreamOptions {
+  after?: number;
+  maxReconnects?: number;
+  onCursor?: (lastEventId: number) => void;
+  onReconnect?: (attempt: number) => void;
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
+}
+
+function reconnectDelay(attempt: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(resolve, Math.min(250 * 2 ** attempt, 4000));
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeout);
+        reject(abortError());
+      },
+      { once: true }
+    );
+  });
+}
+
+export async function streamAgentRunEventsAPI(
+  runId: string,
+  callbacks: AgentStreamCallbacks,
+  signal?: AbortSignal,
+  options: DurableAgentStreamOptions = {}
+): Promise<number> {
+  let cursor = Math.max(0, options.after || 0);
+  const maxReconnects = options.maxReconnects ?? 6;
+  let reconnects = 0;
+
+  while (true) {
+    if (signal?.aborted) throw abortError();
+    try {
+      const headers = new Headers({ Accept: "text/event-stream" });
+      if (cursor > 0) headers.set("Last-Event-ID", String(cursor));
+      const response = await fetch(`${API_BASE}/agent/runs/${runId}/events`, {
+        headers,
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok || !response.body) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`Agent Run events ${response.status}: ${body.slice(0, 200)}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      let receivedDone = false;
+      const consume = (buffer: string) => {
+        for (const event of parseSSE(buffer)) {
+          if (event.id !== null && event.id > cursor) {
+            cursor = event.id;
+            options.onCursor?.(cursor);
+          }
+          if (event.event === "done") receivedDone = true;
+          dispatchAgentEvent(event.event, event.data, callbacks);
+        }
+      };
+
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        pending += decoder.decode(chunk.value, { stream: true });
+        const splitAt = pending.lastIndexOf("\n\n");
+        if (splitAt === -1) continue;
+        consume(pending.slice(0, splitAt + 2));
+        pending = pending.slice(splitAt + 2);
+      }
+      pending += decoder.decode();
+      if (pending.trim()) consume(pending);
+      if (receivedDone) return cursor;
+
+      const snapshot = await getAgentRunAPI(runId, signal);
+      if (snapshot.status === "completed" && snapshot.result) {
+        callbacks.onDone?.(snapshot.result);
+        return Math.max(cursor, snapshot.last_event_id);
+      }
+      if (snapshot.status === "failed") {
+        callbacks.onError?.(snapshot.error || "Agent Run failed");
+        return Math.max(cursor, snapshot.last_event_id);
+      }
+      if (snapshot.status === "cancelled") return Math.max(cursor, snapshot.last_event_id);
+      throw new Error("Agent Run event stream closed before terminal state");
+    } catch (error) {
+      if (signal?.aborted || (error as Error).name === "AbortError") {
+        throw abortError();
+      }
+      if (reconnects >= maxReconnects) throw error;
+      options.onReconnect?.(reconnects + 1);
+      await reconnectDelay(reconnects, signal);
+      reconnects += 1;
     }
   }
 }

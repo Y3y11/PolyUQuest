@@ -169,13 +169,20 @@ class QueryDrivenAgent:
         self.telemetry = telemetry
 
     async def run(
-        self, request: AgentQueryRequest, emit: EmitCallback | None = None
+        self,
+        request: AgentQueryRequest,
+        emit: EmitCallback | None = None,
+        *,
+        run_id: str | None = None,
+        telemetry_run_id: str | None = None,
     ) -> AgentQueryResponse:
-        run_id = f"run-{uuid.uuid4().hex}"
+        run_id = run_id or f"run-{uuid.uuid4().hex}"
+        telemetry_run_id = telemetry_run_id or run_id
         started = time.perf_counter()
         self.telemetry.start_run(
-            run_id,
+            telemetry_run_id,
             "agent_query",
+            root_run_id=run_id,
             query=request.query,
             attributes={
                 "explore_web": request.explore_web,
@@ -184,14 +191,19 @@ class QueryDrivenAgent:
             },
         )
         try:
-            with self.telemetry.bind(run_id):
-                response = await self._run_impl(request, emit, run_id=run_id)
+            with self.telemetry.bind(telemetry_run_id):
+                response = await self._run_impl(
+                    request,
+                    emit,
+                    run_id=run_id,
+                    telemetry_run_id=telemetry_run_id,
+                )
         except asyncio.CancelledError:
-            self.telemetry.finish_run(run_id, started, status="cancelled")
+            self.telemetry.finish_run(telemetry_run_id, started, status="cancelled")
             raise
         except Exception as exc:
             self.telemetry.finish_run(
-                run_id,
+                telemetry_run_id,
                 started,
                 status="error",
                 response_status="error",
@@ -199,7 +211,7 @@ class QueryDrivenAgent:
             )
             raise
         self.telemetry.finish_run(
-            run_id,
+            telemetry_run_id,
             started,
             status="error" if response.response_status == "error" else "completed",
             response_status=response.response_status,
@@ -218,6 +230,7 @@ class QueryDrivenAgent:
         emit: EmitCallback | None = None,
         *,
         run_id: str,
+        telemetry_run_id: str,
     ) -> AgentQueryResponse:
         emit = emit or _noop_emit
         started = time.perf_counter()
@@ -245,7 +258,7 @@ class QueryDrivenAgent:
                 details=details,
             )
             actions.append(item)
-            self.telemetry.record_action(run_id, item)
+            self.telemetry.record_action(telemetry_run_id, item)
             await emit("action", item.model_dump())
 
         await emit("run_started", {"run_id": run_id, "query": request.query})

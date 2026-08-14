@@ -117,6 +117,72 @@ describe("BFF route and request policy", () => {
     expect(response.status).toBe(413);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("allows durable run routes and forwards only validated cursors", async () => {
+    let upstreamHeaders = new Headers();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      upstreamHeaders = new Headers(init?.headers);
+      return new Response('id: 8\nevent: action\ndata: {}\n\n', {
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    });
+    const runId = "run-0123456789abcdef0123456789abcdef";
+    const request = new Request(
+      `https://quest.example.test/api/agent/runs/${runId}/events`,
+      { headers: { "Last-Event-ID": "7", "X-API-Key": "browser-key" } }
+    );
+    const response = await proxyBffRequest(
+      request,
+      { params: { path: ["agent", "runs", runId, "events"] } },
+      { config: config(), fetchImpl }
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstreamHeaders.get("last-event-id")).toBe("7");
+    expect(upstreamHeaders.get("x-api-key")).toBe("reader-key-for-contract");
+    expect(await response.text()).toContain("id: 8");
+  });
+
+  it("rejects malformed durable identifiers and recovery headers", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const malformedRun = await proxyBffRequest(
+      new Request("https://quest.example.test/api/agent/runs/run-bad/events"),
+      { params: { path: ["agent", "runs", "run-bad", "events"] } },
+      { config: config(), fetchImpl }
+    );
+    const runId = "run-0123456789abcdef0123456789abcdef";
+    const malformedCursor = await proxyBffRequest(
+      new Request(`https://quest.example.test/api/agent/runs/${runId}/events`, {
+        headers: { "Last-Event-ID": "7 OR 1=1" },
+      }),
+      { params: { path: ["agent", "runs", runId, "events"] } },
+      { config: config(), fetchImpl }
+    );
+
+    expect(malformedRun.status).toBe(404);
+    expect(malformedCursor.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("forwards a valid idempotency key only to durable run creation", async () => {
+    let upstreamHeaders = new Headers();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      upstreamHeaders = new Headers(init?.headers);
+      return Response.json({ run_id: "run-0123456789abcdef0123456789abcdef" }, { status: 202 });
+    });
+    const request = postRequest("agent/runs");
+    request.headers.set("Idempotency-Key", "browser-0123456789abcdef");
+    const response = await proxyBffRequest(
+      request,
+      { params: { path: ["agent", "runs"] } },
+      { config: config(), fetchImpl }
+    );
+
+    expect(response.status).toBe(202);
+    expect(upstreamHeaders.get("idempotency-key")).toBe(
+      "browser-0123456789abcdef"
+    );
+  });
 });
 
 describe("BFF upstream and SSE contract", () => {

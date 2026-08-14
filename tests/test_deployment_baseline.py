@@ -37,6 +37,7 @@ def _production_settings(**overrides):
         "app_runtime_profile": "remote",
         "embedding_provider": "siliconflow",
         "siliconflow_api_key": "siliconflow-test-key",
+        "agent_run_worker_enabled": False,
     }
     values.update(overrides)
     module_state = {
@@ -78,8 +79,15 @@ class ProductionConfigurationTests(unittest.TestCase):
             app_process_role="worker",
             api_auth_mode="disabled",
             api_auth_keys="",
+            agent_run_worker_enabled=True,
         )
         self.assertEqual(settings.app_process_role, "worker")
+
+    def test_production_api_cannot_execute_agent_runs_in_process(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "AGENT_RUN_WORKER_ENABLED=false"
+        ):
+            _production_settings(agent_run_worker_enabled=True)
 
     def test_unknown_providers_fail_before_first_request(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unsupported production LLM_PROVIDER"):

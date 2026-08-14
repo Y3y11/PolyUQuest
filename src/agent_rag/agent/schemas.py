@@ -13,8 +13,8 @@ _CONTROLLER = agent_config.get("controller", {})
 
 
 class AgentTurn(BaseModel):
-    user: str
-    assistant: str
+    user: str = Field(min_length=1, max_length=4000)
+    assistant: str = Field(min_length=1, max_length=16000)
 
 
 class AgentBudget(BaseModel):
@@ -31,7 +31,7 @@ class AgentBudget(BaseModel):
 class AgentQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     mode: SearchMode = "auto"
-    history: list[AgentTurn] = Field(default_factory=list)
+    history: list[AgentTurn] = Field(default_factory=list, max_length=20)
     explore_web: bool = True
     persist_discoveries: bool = True
     freshness: Literal["auto", "prefer_fresh", "require_fresh"] = "auto"
@@ -82,3 +82,39 @@ class AgentQueryResponse(BaseModel):
     exploration: ExplorationSummary = Field(default_factory=ExplorationSummary)
     pipeline_trace: list[ToolTraceStep] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
+
+
+AgentRunPublicStatus = Literal[
+    "queued",
+    "running",
+    "retry",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
+
+class AgentRunSubmission(BaseModel):
+    run_id: str
+    status: AgentRunPublicStatus
+    created: bool
+    status_url: str
+    events_url: str
+    cancel_url: str
+
+
+class AgentRunSnapshot(BaseModel):
+    run_id: str
+    query: str
+    status: AgentRunPublicStatus
+    attempts: int
+    max_attempts: int
+    cancel_requested: bool = False
+    last_event_id: int = 0
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+    result: AgentQueryResponse | None = None

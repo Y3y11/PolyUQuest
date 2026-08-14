@@ -199,6 +199,20 @@ API 变量。门禁最终 6/6 checks 通过；排查过程同时发现并修复 
 服务凭据不进入 bundle，frontend 能通过 internal network 调用 API，但终端用户身份仍明确
 交给企业 SSO/ingress，未把共享 reader key 包装成完整 IAM。
 
+### 迭代 19：持久化 Agent Run 与 SSE 断线恢复
+
+把长耗时 Agent 执行从单次 StreamingResponse 生命周期中拆出：提交接口以 Idempotency-Key 创建
+SQLite WAL Run，独立 Worker 通过 lease/heartbeat/attempt 执行，普通事件持续追加，最终 done、
+result 与 completed 在同一事务提交。浏览器只把 SSE 作为可重连观察通道；同页断网携带
+Last-Event-ID 补发，刷新后按 run_id 重放完整可审计轨迹，显式 Stop 才写持久化取消。
+
+生产 Compose 强制 API 关闭 Agent Run loop、Worker 开启并共享 runtime volume；BFF 只开放严格
+run_id 路径，并只转发校验后的 Idempotency-Key/Last-Event-ID。实现保留旧同步/流接口作为回滚
+面，明确采用 at-least-once，并复用 GraphPatch/Outbox 幂等控制重试副作用。
+
+解决的问题：代理重启、网络切换、页面刷新和前端发布不再直接丢失已经发生费用的在线探索；
+任务状态、事件、取消和最终结果有稳定 run_id，可恢复执行与可审计交付首次形成闭环。
+
 ## 5. 当前总体架构
 
 ```text
@@ -209,8 +223,13 @@ Browser UI（无 service key）
       -> runtime file secret + SSE/cancel passthrough
   -> FastAPI API-key Principal + reader/operator/admin RBAC
       -> body-free Security Audit Ledger
-  -> Agent API / SSE
-      -> Query Profile + Evidence Evaluator + Budget Controller
+  -> Durable Agent Run API / replayable SSE
+      -> SQLite WAL Run + Event Store
+      -> Idempotency-Key / Last-Event-ID / explicit cancel
+
+Agent Run Worker
+  -> lease / heartbeat / retry / terminal transaction
+  -> Query Profile + Evidence Evaluator + Budget Controller
       -> PolyUQuest Search Tool
           -> Qdrant Dense + BM25 + Neo4j Graph + Reranker
       -> Expand / Trusted Fetch / Snapshot
@@ -268,6 +287,8 @@ Telemetry + Evaluation
 - Hash-only API Key + FastAPI Dependency：适合作为单租户服务到服务认证 MVP；角色依赖显式附着路由，安全审计只保存 route template 和授权元数据。终端用户身份交给 BFF/企业 SSO，后续再迁移 OIDC/JWT 与多租户 Scope。
 - Next.js Server-only BFF：浏览器保持同源且不接触 raw service key；Route Handler 只开放
   reader 能力并透明传递 SSE。工作负载身份与最终用户身份分离，SSO/OIDC 仍由受控入口负责。
+- Durable Agent Run + SQLite WAL：在单机 Compose 阶段用短事务、lease 和可重放事件把任务生命周期
+  与 HTTP 连接解耦；明确采用 at-least-once，跨主机/多租户后迁移 PostgreSQL 与事件总线。
 - Docker capability profile + Policy-as-Code：默认 remote 镜像不携带本地 ML 栈；Linux CI
   同时验证 non-root/read-only 运行合同、SBOM/CVE 和真实业务/拓扑/BFF 场景。
 
@@ -283,7 +304,7 @@ Telemetry + Evaluation
 ## 8. 后续路线
 
 - PageVersion 回滚、Reconciliation 审批与 Diff 可视化；
-- 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
+- PostgreSQL durable queue/Outbox、Redis Streams 和多副本分布式执行；
 - 将现有稳定 telemetry contract 导出到 OpenTelemetry/Prometheus 与运营面板；
 - OIDC/JWT、企业 SSO、Key 托管轮换、租户/Domain Scope 与端到端数据隔离；
 - 事实冲突裁决、来源优先级与时态查询；
@@ -308,6 +329,7 @@ Telemetry + Evaluation
 - `docs/BUSINESS_E2E_GATE_PRD.md`：真实双存储在线知识闭环；
 - `docs/PRODUCTION_TOPOLOGY_E2E_PRD.md`：HTTP/SSE、独立进程与 Worker lease 接管；
 - `docs/BROWSER_BFF_SSE_PRD.md`：浏览器同源 BFF、凭据隔离与 SSE 交付；
+- `docs/DURABLE_AGENT_RUN_PRD.md`：持久化 Run、Worker lease、事件重放与显式取消；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

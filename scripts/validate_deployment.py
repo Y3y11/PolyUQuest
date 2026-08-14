@@ -93,6 +93,15 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("api must disable the in-process index worker")
     if api_environment.get("FRESHNESS_WORKER_ENABLED") != "false":
         errors.append("api must disable the in-process freshness worker")
+    if api_environment.get("AGENT_RUN_WORKER_ENABLED") != "false":
+        errors.append("api must disable the in-process Agent Run worker")
+    if worker_environment.get("AGENT_RUN_WORKER_ENABLED") != "true":
+        errors.append("worker must enable the Agent Run worker")
+    expected_run_store = "/app/data/runtime/agent_runs.sqlite3"
+    if api_environment.get("AGENT_RUN_STORE_PATH") != expected_run_store:
+        errors.append("api must use the shared Agent Run store path")
+    if worker_environment.get("AGENT_RUN_STORE_PATH") != expected_run_store:
+        errors.append("worker must use the shared Agent Run store path")
 
     frontend_environment = frontend.get("environment", {})
     if frontend_environment.get("BACKEND_API_URL") != "http://api:8000/api":

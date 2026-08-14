@@ -105,6 +105,9 @@ and streams FastAPI SSE without exposing backend credentials to the browser.
 Production requires a Docker secret file and an exact Origin allowlist; never
 use `NEXT_PUBLIC_*` for the backend URL or service key. See
 [`docs/BROWSER_BFF_SSE_RUNBOOK.md`](docs/BROWSER_BFF_SSE_RUNBOOK.md).
+Agent queries use durable Run creation plus replayable SSE, so a browser
+refresh or transient disconnect does not restart the retrieval task. See
+[`docs/DURABLE_AGENT_RUN_RUNBOOK.md`](docs/DURABLE_AGENT_RUN_RUNBOOK.md).
 
 ---
 
@@ -164,6 +167,11 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `POST` | `/api/query/stream` | Ask a question with SSE answer streaming |
 | `POST` | `/api/agent/query` | Bounded search/expand/fetch Agent with evidence trace |
 | `POST` | `/api/agent/query/stream` | Agent actions and final response over SSE |
+| `POST` | `/api/agent/runs` | Create an idempotent durable Agent Run |
+| `GET`  | `/api/agent/runs/{run_id}` | Read Run status and terminal result |
+| `GET`  | `/api/agent/runs/{run_id}/events` | Replayable SSE with `Last-Event-ID` |
+| `POST` | `/api/agent/runs/{run_id}/cancel` | Persist an explicit cancellation request |
+| `GET`  | `/api/agent/runs/stats` | Run queue counts and oldest waiting age |
 | `GET`  | `/api/graph/stats` | Knowledge-graph node counts |
 | `GET`  | `/api/indexing/jobs` | Async indexing jobs and status |
 | `GET`  | `/api/indexing/quality/decisions` | Audited page-quality decisions |

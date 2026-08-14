@@ -39,6 +39,7 @@ async def _lifespan(app: FastAPI):
     app.state.bm25_ready = False
     app.state.index_worker = None
     app.state.freshness_worker = None
+    app.state.agent_run_worker = None
     from agent_rag.runtime import prepare_process_runtime
 
     await asyncio.to_thread(prepare_process_runtime)
@@ -83,11 +84,14 @@ async def _lifespan(app: FastAPI):
         await bootstrap_background_state()
     from agent_rag.freshness.worker import freshness_worker_lifespan
     from agent_rag.indexing.worker import index_worker_lifespan
+    from agent_rag.runs.worker import agent_run_worker_lifespan
 
     async with (
+        agent_run_worker_lifespan() as agent_run_worker,
         index_worker_lifespan() as worker,
         freshness_worker_lifespan() as freshness_worker,
     ):
+        app.state.agent_run_worker = agent_run_worker
         app.state.index_worker = worker
         app.state.freshness_worker = freshness_worker
         app.state.startup_complete = True
