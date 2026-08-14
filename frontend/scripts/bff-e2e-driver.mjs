@@ -114,6 +114,7 @@ async function run() {
       status: streamResponse.status,
       events: stream.events,
       chunks: stream.chunkTimes.length,
+      body: stream.text.slice(0, 512),
       cache_control: streamResponse.headers.get("cache-control"),
       buffering: streamResponse.headers.get("x-accel-buffering"),
       request_id: streamResponse.headers.get("x-request-id"),

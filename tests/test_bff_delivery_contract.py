@@ -59,6 +59,8 @@ def test_bff_workflow_runs_build_scenario_artifacts_and_cleanup() -> None:
     assert "npm run build" in workflow
     assert "BFF_E2E_SECRET_MARKER: bff-e2e-secret-" in workflow
     assert "openssl rand -hex 24" in workflow
+    assert "printf '%s' \"$secret_value\" | sha256sum" in workflow
+    assert 'sha256sum "$secret_file"' not in workflow
     assert 'sudo chown root:10001 "$secret_file"' in workflow
     assert "sudo chmod 0440" in workflow
     assert "node frontend/scripts/bff-e2e-driver.mjs" in workflow

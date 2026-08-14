@@ -38,6 +38,8 @@ python -m agent_rag.security.cli --key-id operations-admin --role admin
   `D:\protected\polyuquest\frontend-reader.key`；
 - 文件只包含一行 raw key，不提交 Git；Linux Compose 宿主机使用
   `root:10001` 与 `0440`，只允许 root 和 frontend 容器组读取；
+- 文件末尾可以有一个换行，但 `API_AUTH_KEYS` digest 必须针对去除该换行后的 raw key
+  计算，不能直接对整个文件字节执行 `sha256sum`；
 - admin raw key 不交给 BFF，仅交给受控运维工具或 secret manager。
 
 `.env.production` 至少配置：

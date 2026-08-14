@@ -239,7 +239,8 @@ production Compose 调整：
 - **BFF 被误认为完整登录系统**：文档与 UI/运维明确标注仍需企业 SSO/ingress；
 - **SSE 被平台缓冲**：设置 no-transform/no-buffering，并用多 chunk 时间证据验证；
 - **长 Agent 占用 Node connection**：有界 timeout、取消传播与并发/限流后续接入；
-- **secret/hash 不匹配**：readiness smoke test 必须实际通过 FastAPI reader route；
+- **secret/hash 不匹配**：secret file 可有末尾换行，但 digest 必须对 BFF `.trim()` 后的
+  canonical key 计算；readiness smoke test 必须实际通过 FastAPI reader route；
 - **file secret 权限不匹配**：Linux provisioning 固定 `root:10001/0440`，E2E 使用与生产
   相同的非 root UID/GID 验证真实读取；
 - **验证进程扩大 secret 读取面**：E2E raw key 使用公开 canary 前缀和随机秘密后缀，
