@@ -172,6 +172,9 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
     )
     assert services["worker"]["environment"]["INDEX_WORKER_LEASE_SECONDS"] == "2"
     assert "agent-rag-worker-health" in services["worker"]["healthcheck"]["test"]
+    assert services["api"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
+    assert services["worker"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
+    assert "cypher-shell" in " ".join(services["neo4j"]["healthcheck"]["test"])
     assert "TOPOLOGY_API_AUTH_KEYS" in raw
     assert "topology-contract-reader" not in raw
     assert "topology-contract-admin" not in raw

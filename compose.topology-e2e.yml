@@ -65,9 +65,12 @@ services:
       - topology_runtime:/app/data/runtime
       - topology_cache:/app/data/cache
     depends_on:
-      - neo4j
-      - qdrant
-      - fixture
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      fixture:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -103,9 +106,12 @@ services:
       - topology_runtime:/app/data/runtime
       - topology_cache:/app/data/cache
     depends_on:
-      - neo4j
-      - qdrant
-      - fixture
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      fixture:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "agent-rag-worker-health", "--max-age-seconds", "2"]
       interval: 1s
@@ -146,6 +152,15 @@ services:
     tmpfs:
       - /data:size=512m
       - /logs:size=64m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          cypher-shell -u neo4j -p topology_e2e_password
+          "RETURN 1" >/dev/null 2>&1
+      interval: 3s
+      timeout: 5s
+      retries: 40
     restart: "no"
     networks:
       - backend
