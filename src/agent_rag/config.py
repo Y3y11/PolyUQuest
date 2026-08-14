@@ -175,6 +175,7 @@ llm_config = _load_yaml("llm.yaml")
 aliases_config = _load_yaml("aliases.yaml")
 thresholds_config = _load_yaml("thresholds.yaml")
 agent_config = _load_yaml("agent.yaml")
+observability_config = _load_yaml("observability.yaml")
 
 
 def stage_model(stage: str) -> str | None:

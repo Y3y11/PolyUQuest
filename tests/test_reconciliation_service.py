@@ -12,6 +12,8 @@ from agent_rag.reconciliation import (
     ReconciliationStore,
 )
 from agent_rag.reconciliation.service import ReconciliationService
+from agent_rag.telemetry.recorder import TelemetryRecorder
+from agent_rag.telemetry.store import TelemetryStore
 from agent_rag.tools.observations import ObservationRecord, ObservationStore, PatchStore
 from agent_rag.tools.schemas import GraphPatch, PublishPatchOutput
 from agent_rag.versioning import PageVersionStore
@@ -46,10 +48,13 @@ def _service(temp_dir: str, inventory: ConsistencyInventory):
         "patches": PatchStore(db_path=path),
         "observations": ObservationStore(db_path=path),
     }
+    telemetry = TelemetryStore(path)
     service = ReconciliationService(
         **stores,
         inventory_factory=lambda: inventory,
+        telemetry=TelemetryRecorder(telemetry),
     )
+    stores["telemetry"] = telemetry
     return service, stores
 
 
@@ -99,6 +104,9 @@ def test_scan_is_read_only_deduplicates_replay_and_marks_unknown_manual() -> Non
         )
         assert unknown.repairability == "manual_review"
         assert stores["patches"].get(patch.patch_id).status == "repair_required"
+        telemetry = stores["telemetry"].get(detail.run.run_id)
+        assert telemetry is not None
+        assert telemetry.run.response_status == "planned"
 
 
 def test_inflight_patch_is_not_planned_for_concurrent_replay() -> None:

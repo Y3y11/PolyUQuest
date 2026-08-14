@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from agent_rag.reconciliation.models import (
     RepairAction,
 )
 from agent_rag.reconciliation.store import ReconciliationStore, reconciliation_store
+from agent_rag.telemetry import TelemetryRecorder, telemetry_recorder
 from agent_rag.tools.graph_patch import PublishPatchTool
 from agent_rag.tools.observations import (
     ObservationStore,
@@ -45,6 +47,7 @@ class ReconciliationService:
         observations: ObservationStore = observation_store,
         inventory_factory: Callable[[], ConsistencyInventory] | None = None,
         publish_factory: Callable[[], PublishPatchTool] = PublishPatchTool,
+        telemetry: TelemetryRecorder = telemetry_recorder,
     ):
         self.store = store
         self.outbox = outbox
@@ -54,12 +57,21 @@ class ReconciliationService:
         self.observations = observations
         self.inventory_factory = inventory_factory
         self.publish_factory = publish_factory
+        self.telemetry = telemetry
 
     def scan(
         self, *, verification_of_run_id: str | None = None
     ) -> ReconciliationRunDetail:
         run = self.store.create(
             ReconciliationRun(verification_of_run_id=verification_of_run_id)
+        )
+        telemetry_started = time.perf_counter()
+        self.telemetry.start_run(
+            run.run_id,
+            "reconciliation",
+            root_run_id=verification_of_run_id or run.run_id,
+            parent_run_id=verification_of_run_id,
+            attributes={"operation": "scan", "dry_run": True},
         )
         try:
             inventory = self._inventory()
@@ -78,9 +90,28 @@ class ReconciliationService:
                 },
                 "dry_run": True,
             }
-            return self.store.save_plan(run, findings, actions)
+            detail = self.store.save_plan(run, findings, actions)
+            self.telemetry.finish_run(
+                run.run_id,
+                telemetry_started,
+                status="completed",
+                response_status="planned",
+                attributes={
+                    "operation": "scan",
+                    "findings_count": len(findings),
+                    "actions_count": len(actions),
+                },
+            )
+            return detail
         except Exception as exc:
             self.store.mark_scan_failed(run, str(exc))
+            self.telemetry.finish_run(
+                run.run_id,
+                telemetry_started,
+                status="error",
+                response_status="scan_failed",
+                error_category=exc.__class__.__name__,
+            )
             logger.exception("reconciliation_scan_failed", run_id=run.run_id)
             raise
 
@@ -91,9 +122,18 @@ class ReconciliationService:
         if detail is None:
             raise KeyError(run_id)
         owner_id = f"recon-worker-{uuid.uuid4().hex}"
+        telemetry_run_id = f"recon-exec-{uuid.uuid4().hex}"
         self.store.claim_execution(run_id, owner_id)
         self.store.recover_stale_actions(run_id)
         detail = self.store.get_detail(run_id)  # reload reclaimed actions
+        telemetry_started = time.perf_counter()
+        self.telemetry.start_run(
+            telemetry_run_id,
+            "reconciliation",
+            root_run_id=run_id,
+            parent_run_id=run_id,
+            attributes={"operation": "execute", "plan_run_id": run_id},
+        )
         heartbeat_stop = threading.Event()
         heartbeat_error: list[Exception] = []
 
@@ -124,7 +164,8 @@ class ReconciliationService:
                 try:
                     if action.action_type == "replay_patch":
                         publisher = publisher or self.publish_factory()
-                        self._replay_patch(action, publisher)
+                        with self.telemetry.bind(telemetry_run_id):
+                            self._replay_patch(action, publisher)
                     else:
                         self._retry_job(action)
                 except Exception as exc:
@@ -138,23 +179,50 @@ class ReconciliationService:
             self.store.finish_execution(run_id, owner_id)
             try:
                 verification = self.scan(verification_of_run_id=run_id)
-                return self.store.attach_verification(
+                result = self.store.attach_verification(
                     run_id,
                     verification_run_id=verification.run.run_id,
                     findings_count=verification.run.findings_count,
                 )
+                self.telemetry.finish_run(
+                    telemetry_run_id,
+                    telemetry_started,
+                    status="completed",
+                    response_status="verified",
+                    attributes={
+                        "operation": "execute",
+                        "verification_run_id": verification.run.run_id,
+                        "remaining_findings": verification.run.findings_count,
+                    },
+                )
+                return result
             except Exception as verification_exc:
                 logger.warning(
                     "reconciliation_verification_failed",
                     run_id=run_id,
                     error=str(verification_exc),
                 )
-                return self.store.attach_verification(
+                result = self.store.attach_verification(
                     run_id,
                     verification_run_id=None,
                     error=str(verification_exc),
                 )
+                self.telemetry.finish_run(
+                    telemetry_run_id,
+                    telemetry_started,
+                    status="completed",
+                    response_status="verification_failed",
+                    error_category=verification_exc.__class__.__name__,
+                )
+                return result
         except Exception as exc:
+            self.telemetry.finish_run(
+                telemetry_run_id,
+                telemetry_started,
+                status="error",
+                response_status="execution_failed",
+                error_category=exc.__class__.__name__,
+            )
             try:
                 self.store.fail_execution(run_id, owner_id, str(exc))
             except ValueError:

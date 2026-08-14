@@ -8,6 +8,8 @@ from pathlib import Path
 
 from agent_rag.indexing.outbox import IndexOutbox
 from agent_rag.indexing.worker import IndexWorker
+from agent_rag.telemetry.recorder import TelemetryRecorder
+from agent_rag.telemetry.store import TelemetryStore
 from agent_rag.tools.schemas import GraphPatch, PublishPatchOutput
 
 
@@ -44,10 +46,23 @@ class IndexWorkerTests(unittest.TestCase):
                 outbox,
                 publish_factory=Publisher,
                 worker_id="worker-test",
+                telemetry=TelemetryRecorder(
+                    TelemetryStore(Path(temp_dir) / "telemetry.sqlite3")
+                ),
             )
             result = worker.process_once()
             self.assertEqual(result.status, "succeeded")
             self.assertEqual(outbox.get(job.job_id).status, "succeeded")
+            telemetry_store = TelemetryStore(Path(temp_dir) / "telemetry.sqlite3")
+            telemetry = telemetry_store.list(run_type="indexing")
+            self.assertEqual(telemetry[0].root_run_id, patch.run_id)
+            self.assertEqual(telemetry[0].response_status, "succeeded")
+            detail = telemetry_store.get(telemetry[0].run_id)
+            assert detail is not None
+            self.assertEqual(
+                {span.operation for span in detail.spans},
+                {"indexing.queue_wait", "indexing.publish_patch"},
+            )
 
     def test_worker_failure_is_recorded_for_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

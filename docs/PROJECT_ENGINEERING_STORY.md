@@ -106,6 +106,16 @@ Block 当前态更新后，进一步让 Entity/Relation 层与网页证据同步
 
 解决的问题：系统不再只知道“某次写入是否成功”，而能持续回答当前知识是否跨存储一致、哪些差异可安全自动恢复、哪些必须人工判断，以及每次修复的 before/after 和失败原因。
 
+### 迭代 10：端到端运行可观测性与回归评测闭环
+
+前九轮已经让系统能够在线探索、异步增量入库、更新事实并治理跨存储漂移，但单次问答的 Action 只存在于响应中，进程级 token 累加器在并发请求间会互相污染，Agent 返回后也无法继续追踪对应 Index Job 的真实发布结果。本轮建立稳定的 `RunTelemetry / TelemetrySpan` 契约，以 root/parent run 串联 Agent、异步索引和 Reconciliation，并用 ContextVar 将 `to_thread` 中的 LLM 调用准确归属到当前请求。
+
+缓存命中同时记录 logical usage 与 billable usage，避免“复现实验成本”和“实际供应商账单”混为一谈；SQLite 仅保存 query hash、长度、状态、耗时、受控计数和 allowlist 标识，不保存问题、回答、Prompt 或网页正文。Telemetry 写失败采用 fail-open 并单独计数，不能拖垮核心问答。API 提供运行列表、详情、P50/P95/P99 聚合和配置化 SLO 判定；样本不足时返回 `insufficient_data`，不伪装成达标。
+
+离线侧新增版本化 JSONL 评测合同和 `run / score / compare` CLI，覆盖状态、必要事实、来源、禁止声明、探索/持久化行为和延迟/页面预算。没有 gold 的指标严格输出 N/A；不同数据集快照或 evaluator contract 的报告禁止直接比较。
+
+解决的问题：系统不仅能“做完一次回答”，还能够定位一次查询慢在哪里、花费在哪个模型阶段、在线发现是否最终入库、发布失败发生在哪次 attempt，并在同一冻结业务集上判断新版本究竟改善质量还是只增加成本。
+
 ## 5. 当前总体架构
 
 ```text
@@ -144,6 +154,12 @@ Reconciliation Workflow
   -> explicit confirm + CAS action claim
   -> replay Patch / retry dead letter
   -> before/after audit + follow-up verification scan
+
+Telemetry + Evaluation
+  -> root Agent run -> child Index/Reconciliation runs
+  -> ContextVar stage-level logical/billable LLM usage
+  -> SQLite run/span ledger -> stats + configurable SLO API
+  -> frozen JSONL scenarios -> deterministic score/report/compare
 ```
 
 ## 6. 技术选型理由
@@ -171,7 +187,7 @@ Reconciliation Workflow
 
 - PageVersion 回滚、Reconciliation 审批与 Diff 可视化；
 - 独立 Worker、PostgreSQL Outbox/Redis Streams 和分布式锁；
-- OpenTelemetry/Prometheus 与运营面板；
+- 将现有稳定 telemetry contract 导出到 OpenTelemetry/Prometheus 与运营面板；
 - 权限优先级恢复后加入租户隔离、审批和敏感数据治理；
 - 事实冲突裁决、来源优先级与时态查询；
 - Human-in-the-loop 审批、租户隔离和敏感实体治理。
@@ -185,6 +201,7 @@ Reconciliation Workflow
 - `docs/PAGE_QUALITY_GATE_PRD.md`：页面质量门控与知识库污染控制；
 - `docs/ADAPTIVE_FRESHNESS_LIFECYCLE_PRD.md`：自适应刷新与页面生命周期；
 - `docs/CONSISTENCY_RECONCILIATION_PRD.md`：跨存储一致性扫描、修复计划与执行审计；
+- `docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`：端到端运行度量、SLO 与离线回归合同；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

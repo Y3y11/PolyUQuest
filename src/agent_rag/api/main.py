@@ -17,6 +17,7 @@ from agent_rag.api.routes import (
     health_router,
     indexing_router,
     query_router,
+    telemetry_router,
 )
 from agent_rag.config import settings
 from agent_rag.retrieval import _bm25, _embedding
@@ -132,6 +133,7 @@ app.include_router(graph_router.router, prefix="/api", tags=["graph"])
 app.include_router(health_router.router, prefix="/api", tags=["health"])
 app.include_router(indexing_router.router, prefix="/api", tags=["indexing"])
 app.include_router(freshness_router.router, prefix="/api", tags=["freshness"])
+app.include_router(telemetry_router.router, prefix="/api", tags=["telemetry"])
 
 
 def start():

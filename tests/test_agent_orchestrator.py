@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import tempfile
+import time
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 
 from agent_rag.agent.orchestrator import QueryDrivenAgent
 from agent_rag.agent.schemas import AgentBudget, AgentQueryRequest
 from agent_rag.quality import PageQualityDecision, PageQualityFeatures
+from agent_rag.telemetry.recorder import TelemetryRecorder
+from agent_rag.telemetry.store import TelemetryStore
 from agent_rag.tools.observations import ObservationRecord, ObservationStore
 from agent_rag.tools.schemas import (
     EvidenceBlock,
@@ -336,6 +342,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         quality_action="index",
         quality_usable=True,
         quality_fail=False,
+        telemetry=None,
     ):
         store = ObservationStore()
         search = FakeSearch(evidence or [])
@@ -344,6 +351,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         stage = FakeStage()
         publish = FakePublish()
         outbox = FakeOutbox()
+        telemetry_kwargs = {"telemetry": telemetry} if telemetry is not None else {}
         agent = QueryDrivenAgent(
             search_tool=search,
             expand_tool=expand,
@@ -360,6 +368,7 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
             ),
             quality_store=FakeQualityStore(),
             lifecycle_store=FakeLifecycleStore(),
+            **telemetry_kwargs,
         )
         return agent, search, expand, fetch, stage, publish, outbox
 
@@ -374,6 +383,61 @@ class QueryDrivenAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetch.calls, 0)
         self.assertEqual(expand.calls, 0)
         self.assertEqual(stage.calls, 0)
+
+    async def test_completed_agent_run_is_persisted_without_query_body(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = TelemetryStore(Path(temp_dir) / "telemetry.sqlite3")
+            agent, *_ = self.build_agent(
+                evidence=[_existing_evidence()],
+                telemetry=TelemetryRecorder(store),
+            )
+            result = await agent.run(
+                AgentQueryRequest(
+                    query="confidential admission deadline",
+                    persist_discoveries=False,
+                )
+            )
+            detail = store.get(result.run_id)
+            assert detail is not None
+            self.assertEqual(detail.run.status, "completed")
+            self.assertEqual(detail.run.response_status, "answered")
+            self.assertTrue(detail.spans)
+            self.assertNotIn("confidential admission", detail.model_dump_json())
+
+    async def test_agent_exception_and_cancellation_close_telemetry_runs(self) -> None:
+        class FailingProfile:
+            def enrich(self, _profile):
+                raise RuntimeError("profile failed")
+
+        class SlowProfile:
+            def enrich(self, profile):
+                time.sleep(0.2)
+                return profile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = TelemetryStore(Path(temp_dir) / "telemetry.sqlite3")
+            recorder = TelemetryRecorder(store)
+            failing, *_ = self.build_agent(telemetry=recorder)
+            failing.profile_enricher = FailingProfile()
+            with self.assertRaises(RuntimeError):
+                await failing.run(
+                    AgentQueryRequest(query="failure", persist_discoveries=False)
+                )
+
+            slow, *_ = self.build_agent(telemetry=recorder)
+            slow.profile_enricher = SlowProfile()
+            task = asyncio.create_task(
+                slow.run(
+                    AgentQueryRequest(query="cancelled", persist_discoveries=False)
+                )
+            )
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            runs = store.list(run_type="agent_query")
+            self.assertEqual({item.status for item in runs}, {"error", "cancelled"})
 
     async def test_miss_expands_and_uses_temporary_evidence(self) -> None:
         agent, _, expand, fetch, stage, _, _ = self.build_agent()

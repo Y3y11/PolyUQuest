@@ -105,6 +105,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api npm run dev
 | Per-stage LLM model + temperature | `configs/llm.yaml` |
 | Router confidence cutoffs, retrieval thresholds | `configs/thresholds.yaml` |
 | Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
+| Runtime telemetry retention and SLO targets | `configs/observability.yaml` |
 | Entity alias dictionary | `configs/aliases.yaml` |
 | Connector site identity / seed labels / URL policy | `configs/crawl.yaml` |
 
@@ -133,6 +134,10 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/indexing/reconciliation/stats` | Drift and repair audit metrics |
 | `GET`  | `/api/freshness/targets` | Adaptive page lifecycle targets |
 | `GET`  | `/api/freshness/stats` | Refresh schedule and staleness metrics |
+| `GET`  | `/api/telemetry/runs` | Privacy-safe Agent/indexing/reconciliation runs |
+| `GET`  | `/api/telemetry/runs/{run_id}` | Run detail with stage and LLM usage spans |
+| `GET`  | `/api/telemetry/stats` | P50/P95/P99 latency, success and token aggregates |
+| `GET`  | `/api/telemetry/slo` | Configured targets with pass/fail/insufficient-data status |
 | `GET`  | `/api/health/live` | Process liveness without dependency access |
 | `GET`  | `/api/health/ready` | Startup and core dependency readiness |
 | `GET`  | `/api/health/dependencies` | Neo4j and Qdrant status |
@@ -177,6 +182,33 @@ changed snapshots back through the quality gate and asynchronous Outbox. A 304
 updates `last_validated_at` without re-embedding. Operations are available under
 `/api/freshness/*`; set `FRESHNESS_WORKER_ENABLED=false` for an externally
 scheduled deployment.
+
+Agent queries, asynchronous indexing attempts, and reconciliation scans share a
+durable telemetry contract in the SQLite ledger. The root/parent IDs connect a
+user query to the later indexing work it triggered. Raw questions, prompts,
+answers, fetched page bodies, and API keys are not stored: runs retain only a
+query hash, bounded counters, allowlisted identifiers, status, latency, and
+logical versus billable LLM usage. Telemetry writes are fail-open so an
+observability outage cannot break the answer path.
+
+For repeatable release checks, freeze business scenarios as JSONL and execute
+or score them with the deterministic evaluation CLI:
+
+```bash
+python -m agent_rag.evaluation.cli run \
+  --dataset data/eval/agent_business_scenarios.sample.jsonl \
+  --api-url http://127.0.0.1:8000 \
+  --variant candidate --output data/runtime/eval/candidate.json
+
+python -m agent_rag.evaluation.cli compare \
+  --baseline data/runtime/eval/baseline.json \
+  --candidate data/runtime/eval/candidate.json
+```
+
+Metrics without a reference fact/source are reported as `N/A`, not fabricated
+as zero. Report comparison rejects different dataset snapshots or evaluator
+contracts. See
+[`docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md`](docs/END_TO_END_OBSERVABILITY_EVALUATION_PRD.md).
 
 Changed pages are published with deterministic DOM Block Diff. Only modified,
 added, or missing-vector blocks are embedded; structurally relocated blocks

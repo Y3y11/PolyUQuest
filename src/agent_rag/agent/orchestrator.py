@@ -22,8 +22,8 @@ from agent_rag.agent.schemas import (
     ExplorationSummary,
 )
 from agent_rag.config import agent_config, llm_config, settings, stage_model
-from agent_rag.indexing.outbox import IndexOutbox, index_outbox
 from agent_rag.freshness import PageLifecycleStore, page_lifecycle_store
+from agent_rag.indexing.outbox import IndexOutbox, index_outbox
 from agent_rag.quality import PageQualityGate, PageQualityStore, page_quality_store
 from agent_rag.tools._ranking import expanded_query, frontier_score, lexical_score
 from agent_rag.tools.observations import ObservationStore, observation_store
@@ -43,6 +43,7 @@ from agent_rag.tools.schemas import (
 
 if TYPE_CHECKING:
     from agent_rag.llm.client import LLMClient
+    from agent_rag.telemetry.recorder import TelemetryRecorder
     from agent_rag.tools.expand import ExpandTool
     from agent_rag.tools.fetch import FetchTrustedPageTool
     from agent_rag.tools.graph_patch import PublishPatchTool, StagePatchTool
@@ -123,6 +124,7 @@ class QueryDrivenAgent:
         quality_gate: PageQualityGate | None = None,
         quality_store: PageQualityStore = page_quality_store,
         lifecycle_store: PageLifecycleStore = page_lifecycle_store,
+        telemetry: TelemetryRecorder | None = None,
     ):
         if search_tool is None:
             from agent_rag.tools.search import SearchTool
@@ -140,9 +142,7 @@ class QueryDrivenAgent:
             from agent_rag.tools.graph_patch import PublishPatchTool, StagePatchTool
 
             stage_patch_tool = stage_patch_tool or StagePatchTool(observations=observations)
-            publish_patch_tool = publish_patch_tool or PublishPatchTool(
-                observations=observations
-            )
+            publish_patch_tool = publish_patch_tool or PublishPatchTool(observations=observations)
         self.search_tool = search_tool
         self.expand_tool = expand_tool
         self.fetch_tool = fetch_tool
@@ -162,12 +162,64 @@ class QueryDrivenAgent:
         self.quality_gate = quality_gate or PageQualityGate()
         self.quality_store = quality_store
         self.lifecycle_store = lifecycle_store
+        if telemetry is None:
+            from agent_rag.telemetry import telemetry_recorder
+
+            telemetry = telemetry_recorder
+        self.telemetry = telemetry
 
     async def run(
         self, request: AgentQueryRequest, emit: EmitCallback | None = None
     ) -> AgentQueryResponse:
-        emit = emit or _noop_emit
         run_id = f"run-{uuid.uuid4().hex}"
+        started = time.perf_counter()
+        self.telemetry.start_run(
+            run_id,
+            "agent_query",
+            query=request.query,
+            attributes={
+                "explore_web": request.explore_web,
+                "persist_discoveries": request.persist_discoveries,
+                "freshness": request.freshness,
+            },
+        )
+        try:
+            with self.telemetry.bind(run_id):
+                response = await self._run_impl(request, emit, run_id=run_id)
+        except asyncio.CancelledError:
+            self.telemetry.finish_run(run_id, started, status="cancelled")
+            raise
+        except Exception as exc:
+            self.telemetry.finish_run(
+                run_id,
+                started,
+                status="error",
+                response_status="error",
+                error_category=exc.__class__.__name__,
+            )
+            raise
+        self.telemetry.finish_run(
+            run_id,
+            started,
+            status="error" if response.response_status == "error" else "completed",
+            response_status=response.response_status,
+            route_mode=response.mode,
+            stop_reason=response.exploration.stop_reason,
+            evidence_count=len(response.evidence),
+            pages_fetched=response.exploration.pages_fetched,
+            fetch_failures=response.exploration.fetch_failures,
+            indexing_jobs_queued=response.exploration.indexing_jobs_queued,
+        )
+        return response
+
+    async def _run_impl(
+        self,
+        request: AgentQueryRequest,
+        emit: EmitCallback | None = None,
+        *,
+        run_id: str,
+    ) -> AgentQueryResponse:
+        emit = emit or _noop_emit
         started = time.perf_counter()
         actions: list[AgentAction] = []
         trace: list[ToolTraceStep] = []
@@ -193,6 +245,7 @@ class QueryDrivenAgent:
                 details=details,
             )
             actions.append(item)
+            self.telemetry.record_action(run_id, item)
             await emit("action", item.model_dump())
 
         await emit("run_started", {"run_id": run_id, "query": request.query})
@@ -242,9 +295,7 @@ class QueryDrivenAgent:
                 "failed",
                 int((time.perf_counter() - search_started) * 1000),
                 error=str(exc),
-                fallback_to_trusted_web=bool(
-                    request.explore_web and request.budget.max_pages > 0
-                ),
+                fallback_to_trusted_web=bool(request.explore_web and request.budget.max_pages > 0),
             )
             if not request.explore_web or request.budget.max_pages <= 0:
                 answer = "检索服务当前不可用，未能获得可验证证据。请稍后重试。"
@@ -400,9 +451,7 @@ class QueryDrivenAgent:
             snapshot = None
             snapshot_started = time.perf_counter()
             try:
-                snapshot = await asyncio.to_thread(
-                    self.snapshot_tool.run, candidate.url
-                )
+                snapshot = await asyncio.to_thread(self.snapshot_tool.run, candidate.url)
                 if snapshot.exists:
                     await record(
                         "polyuquest.load_page_snapshot",
@@ -411,8 +460,7 @@ class QueryDrivenAgent:
                         url=candidate.url,
                         blocks=len(snapshot.blocks),
                         has_validator=bool(
-                            snapshot.page.get("etag")
-                            or snapshot.page.get("last_modified")
+                            snapshot.page.get("etag") or snapshot.page.get("last_modified")
                         ),
                     )
             except Exception as exc:
@@ -467,9 +515,7 @@ class QueryDrivenAgent:
                             self.lifecycle_store.mark_query_validated_unchanged,
                             fetched.metadata.final_url,
                         )
-                        snapshot.page["last_validated_at"] = (
-                            lifecycle.last_validated_at
-                        )
+                        snapshot.page["last_validated_at"] = lifecycle.last_validated_at
                     except KeyError:
                         pass
                 trace.extend(fetched.trace)
@@ -481,9 +527,7 @@ class QueryDrivenAgent:
                     relevant_blocks=fetched.evidence_gain.relevant_blocks,
                     not_modified=fetched.not_modified,
                     reused_blocks=(
-                        len(snapshot.blocks)
-                        if fetched.not_modified and snapshot is not None
-                        else 0
+                        len(snapshot.blocks) if fetched.not_modified and snapshot is not None else 0
                     ),
                 )
             except Exception as exc:
@@ -564,12 +608,11 @@ class QueryDrivenAgent:
             if fetched.not_modified and snapshot is not None:
                 scored_snapshot = sorted(
                     snapshot.blocks,
-                    key=lambda block: -lexical_score(
-                        request.query,
-                        (
-                            f"{block.get('heading_context', '')} "
-                            f"{block.get('content', '')}"
-                        ),
+                    key=lambda block: (
+                        -lexical_score(
+                            request.query,
+                            (f"{block.get('heading_context', '')} {block.get('content', '')}"),
+                        )
                     ),
                 )[:8]
                 for block in scored_snapshot:
@@ -816,7 +859,5 @@ def _focus_profile(query_profile, missing_claims: list[str]):
     if not missing_claims:
         return query_profile
     wanted = set(missing_claims)
-    focused = [
-        item for item in query_profile.required_claims if item.claim in wanted
-    ]
+    focused = [item for item in query_profile.required_claims if item.claim in wanted]
     return query_profile.model_copy(update={"required_claims": focused})

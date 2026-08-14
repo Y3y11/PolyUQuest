@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -155,6 +156,29 @@ def _extract_usage_from_response(resp: Any) -> dict[str, int]:
     }
 
 
+def _record_run_telemetry(
+    usage: dict[str, int] | None,
+    *,
+    provider: str,
+    model: str,
+    cache_hit: bool,
+    duration_ms: int,
+) -> None:
+    """Attribute usage to the ContextVar-bound run without coupling callers."""
+    from agent_rag.telemetry.recorder import record_current_llm_usage
+
+    usage = usage or {}
+    record_current_llm_usage(
+        stage=_current_stage.get(),
+        provider=provider,
+        model=model,
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        cache_hit=cache_hit,
+        duration_ms=duration_ms,
+    )
+
+
 def _resolve_credentials(provider: str) -> tuple[str, str, str]:
     """Return (api_key, base_url, model) for a given provider name."""
     provider_cfg = llm_config.get("providers", {}).get(provider, {})
@@ -165,8 +189,7 @@ def _resolve_credentials(provider: str) -> tuple[str, str, str]:
         base_url = getattr(settings, url_attr, "")
     else:
         raise ValueError(
-            f"Unknown LLM provider: {provider}. "
-            f"Available: {', '.join(_PROVIDER_REGISTRY)}"
+            f"Unknown LLM provider: {provider}. Available: {', '.join(_PROVIDER_REGISTRY)}"
         )
 
     default_models = {
@@ -178,9 +201,7 @@ def _resolve_credentials(provider: str) -> tuple[str, str, str]:
     return api_key, base_url, model
 
 
-def _build_client(
-    provider: str | None = None, model: str | None = None
-) -> tuple[OpenAI, str]:
+def _build_client(provider: str | None = None, model: str | None = None) -> tuple[OpenAI, str]:
     provider = provider or settings.llm_provider
     api_key, base_url, default_model = _resolve_credentials(provider)
     # Bump SDK-level retries: a 6h+ resolve batch can't afford to die on one
@@ -245,11 +266,26 @@ class LLMClient:
                 content, usage = cached
                 logger.debug("llm_cache_hit", model=params.get("model", self._model))
                 _record_usage_dict(usage)
+                _record_run_telemetry(
+                    usage,
+                    provider=self._provider,
+                    model=str(params.get("model", self._model)),
+                    cache_hit=True,
+                    duration_ms=0,
+                )
                 return content
 
+        call_started = time.perf_counter()
         resp = self._client.chat.completions.create(**params)
         content = resp.choices[0].message.content or ""
         _record_usage(resp)
+        _record_run_telemetry(
+            _extract_usage_from_response(resp),
+            provider=self._provider,
+            model=str(params.get("model", self._model)),
+            cache_hit=False,
+            duration_ms=int((time.perf_counter() - call_started) * 1000),
+        )
         logger.debug(
             "llm_call",
             model=params.get("model", self._model),
@@ -257,9 +293,7 @@ class LLMClient:
             output_tokens=resp.usage.completion_tokens if resp.usage else 0,
         )
         if use_cache and content:
-            set_chat_cached(
-                self._provider, params, content, _extract_usage_from_response(resp)
-            )
+            set_chat_cached(self._provider, params, content, _extract_usage_from_response(resp))
         return content
 
 
@@ -306,11 +340,26 @@ class AsyncLLMClient:
                 content, usage = cached
                 logger.debug("llm_cache_hit", model=params.get("model", self._model))
                 _record_usage_dict(usage)
+                _record_run_telemetry(
+                    usage,
+                    provider=self._provider,
+                    model=str(params.get("model", self._model)),
+                    cache_hit=True,
+                    duration_ms=0,
+                )
                 return content
 
+        call_started = time.perf_counter()
         resp = await self._client.chat.completions.create(**params)
         content = resp.choices[0].message.content or ""
         _record_usage(resp)
+        _record_run_telemetry(
+            _extract_usage_from_response(resp),
+            provider=self._provider,
+            model=str(params.get("model", self._model)),
+            cache_hit=False,
+            duration_ms=int((time.perf_counter() - call_started) * 1000),
+        )
         logger.debug(
             "llm_call",
             model=params.get("model", self._model),
@@ -318,9 +367,7 @@ class AsyncLLMClient:
             output_tokens=resp.usage.completion_tokens if resp.usage else 0,
         )
         if use_cache and content:
-            set_chat_cached(
-                self._provider, params, content, _extract_usage_from_response(resp)
-            )
+            set_chat_cached(self._provider, params, content, _extract_usage_from_response(resp))
         return content
 
     async def chat_stream(

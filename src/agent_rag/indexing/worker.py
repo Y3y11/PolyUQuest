@@ -8,11 +8,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import structlog
 
 from agent_rag.config import settings
 from agent_rag.indexing.outbox import IndexJob, IndexOutbox, index_outbox
+from agent_rag.telemetry import TelemetryRecorder, telemetry_recorder
 from agent_rag.tools.graph_patch import PublishPatchTool
 from agent_rag.tools.schemas import PublishPatchInput
 
@@ -30,14 +32,13 @@ class IndexWorker:
         lease_seconds: int | None = None,
         retry_base_seconds: float | None = None,
         retry_max_seconds: float | None = None,
+        telemetry: TelemetryRecorder = telemetry_recorder,
     ):
         self.outbox = outbox
         self.publish_factory = publish_factory
         self.worker_id = worker_id or f"worker-{uuid.uuid4().hex[:12]}"
         self.poll_seconds = (
-            poll_seconds
-            if poll_seconds is not None
-            else settings.index_worker_poll_seconds
+            poll_seconds if poll_seconds is not None else settings.index_worker_poll_seconds
         )
         self.lease_seconds = lease_seconds or settings.index_worker_lease_seconds
         self.retry_base_seconds = (
@@ -54,17 +55,49 @@ class IndexWorker:
         self._stop = threading.Event()
         self._running = False
         self._last_maintenance = time.monotonic()
+        self.telemetry = telemetry
 
     @property
     def is_running(self) -> bool:
         return self._running and not self._stop.is_set()
 
     def process_once(self) -> IndexJob | None:
-        job = self.outbox.claim(
-            self.worker_id, lease_seconds=self.lease_seconds
-        )
+        job = self.outbox.claim(self.worker_id, lease_seconds=self.lease_seconds)
         if job is None:
             return None
+        telemetry_run_id = f"index-{job.job_id}-{job.total_attempts}"
+        telemetry_started = time.perf_counter()
+        self.telemetry.start_run(
+            telemetry_run_id,
+            "indexing",
+            root_run_id=job.run_id,
+            parent_run_id=job.run_id,
+            attributes={
+                "job_id": job.job_id,
+                "patch_id": job.patch_id,
+                "attempt": job.attempts,
+            },
+        )
+        try:
+            queue_wait_ms = max(
+                0,
+                int(
+                    (
+                        datetime.now(UTC) - datetime.fromisoformat(job.created_at)
+                    ).total_seconds()
+                    * 1000
+                ),
+            )
+        except ValueError:
+            queue_wait_ms = 0
+        self.telemetry.record_span(
+            run_id=telemetry_run_id,
+            stage="indexing.queue",
+            operation="indexing.queue_wait",
+            status="succeeded",
+            duration_ms=queue_wait_ms,
+            attributes={"job_id": job.job_id},
+        )
         try:
             if self._publisher is None:
                 self._publisher = self.publish_factory()
@@ -90,9 +123,39 @@ class IndexWorker:
                 daemon=True,
             )
             heartbeat_thread.start()
+            publish_started = time.perf_counter()
             try:
-                result = self._publisher.run(
-                    PublishPatchInput(patch_id=job.patch_id)
+                try:
+                    with self.telemetry.bind(telemetry_run_id):
+                        result = self._publisher.run(
+                            PublishPatchInput(patch_id=job.patch_id)
+                        )
+                except Exception as exc:
+                    self.telemetry.record_span(
+                        run_id=telemetry_run_id,
+                        stage="indexing.publish",
+                        operation="indexing.publish_patch",
+                        status="failed",
+                        duration_ms=int(
+                            (time.perf_counter() - publish_started) * 1000
+                        ),
+                        error_category=exc.__class__.__name__,
+                        attributes={"job_id": job.job_id, "patch_id": job.patch_id},
+                    )
+                    raise
+                self.telemetry.record_span(
+                    run_id=telemetry_run_id,
+                    stage="indexing.publish",
+                    operation="indexing.publish_patch",
+                    status="succeeded",
+                    duration_ms=int((time.perf_counter() - publish_started) * 1000),
+                    attributes={
+                        "job_id": job.job_id,
+                        "patch_id": job.patch_id,
+                        "operation": result.patch.operation,
+                        "blocks_written": result.blocks_written,
+                        "links_written": result.links_written,
+                    },
                 )
             finally:
                 heartbeat_stop.set()
@@ -102,9 +165,7 @@ class IndexWorker:
                     f"Index job lease heartbeat failed: {heartbeat_error[-1]}"
                 ) from heartbeat_error[-1]
             if not result.read_after_write_ok or result.patch.status != "published":
-                raise RuntimeError(
-                    f"Patch verification failed: {result.patch.status}"
-                )
+                raise RuntimeError(f"Patch verification failed: {result.patch.status}")
             completed = self.outbox.succeed(job.job_id, self.worker_id)
             logger.info(
                 "index_job_succeeded",
@@ -112,6 +173,20 @@ class IndexWorker:
                 patch_id=job.patch_id,
                 operation=result.patch.operation,
                 attempts=completed.attempts,
+            )
+            self.telemetry.finish_run(
+                telemetry_run_id,
+                telemetry_started,
+                status="completed",
+                response_status="succeeded",
+                attributes={
+                    "job_id": job.job_id,
+                    "patch_id": job.patch_id,
+                    "operation": result.patch.operation,
+                    "blocks_written": result.blocks_written,
+                    "links_written": result.links_written,
+                    "read_after_write_ok": result.read_after_write_ok,
+                },
             )
             return completed
         except Exception as exc:
@@ -134,6 +209,13 @@ class IndexWorker:
                     worker_id=self.worker_id,
                     error=str(exc),
                 )
+                self.telemetry.finish_run(
+                    telemetry_run_id,
+                    telemetry_started,
+                    status="error",
+                    response_status="lease_lost",
+                    error_category=exc.__class__.__name__,
+                )
                 return current
             logger.warning(
                 "index_job_failed",
@@ -142,6 +224,13 @@ class IndexWorker:
                 status=failed.status,
                 attempts=failed.attempts,
                 error=str(exc),
+            )
+            self.telemetry.finish_run(
+                telemetry_run_id,
+                telemetry_started,
+                status="error",
+                response_status=failed.status,
+                error_category=exc.__class__.__name__,
             )
             return failed
 

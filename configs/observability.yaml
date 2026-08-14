@@ -1,0 +1,11 @@
+retention_days: 30
+slo:
+  window_hours: 24
+  min_samples: 20
+  agent_query:
+    success_rate_min: 0.99
+    p95_duration_ms_max: 90000
+    avg_billable_tokens_max: 5000
+  indexing:
+    success_rate_min: 0.99
+    p95_duration_ms_max: 60000
