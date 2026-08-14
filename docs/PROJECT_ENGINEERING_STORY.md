@@ -289,6 +289,9 @@ Telemetry + Evaluation
   reader 能力并透明传递 SSE。工作负载身份与最终用户身份分离，SSO/OIDC 仍由受控入口负责。
 - Durable Agent Run + SQLite WAL：在单机 Compose 阶段用短事务、lease 和可重放事件把任务生命周期
   与 HTTP 连接解耦；明确采用 at-least-once，跨主机/多租户后迁移 PostgreSQL 与事件总线。
+- Durable Chaos Topology：把真实 Next.js BFF、FastAPI、共享 Run Store 与独立 Worker 放入同一 Linux
+  场景，验证浏览器断流不取消任务、Worker SIGKILL 后 lease reclaim、游标重放与幂等重提；health/stats
+  将 Worker capability、队列年龄、应用重试和租约接管变成可告警的机器合同。
 - Docker capability profile + Policy-as-Code：默认 remote 镜像不携带本地 ML 栈；Linux CI
   同时验证 non-root/read-only 运行合同、SBOM/CVE 和真实业务/拓扑/BFF 场景。
 
@@ -330,6 +333,7 @@ Telemetry + Evaluation
 - `docs/PRODUCTION_TOPOLOGY_E2E_PRD.md`：HTTP/SSE、独立进程与 Worker lease 接管；
 - `docs/BROWSER_BFF_SSE_PRD.md`：浏览器同源 BFF、凭据隔离与 SSE 交付；
 - `docs/DURABLE_AGENT_RUN_PRD.md`：持久化 Run、Worker lease、事件重放与显式取消；
+- `docs/DURABLE_AGENT_RUN_CHAOS_E2E_PRD.md`：真实 BFF 到 Worker 的故障注入、lease 接管与运行健康；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

@@ -82,6 +82,7 @@ def test_claim_events_and_completion_are_replayable(tmp_path) -> None:
         "action",
         "done",
     ]
+    assert events[1].payload["claim_reason"] == "initial"
     assert [event.event_id for event in store.list_events(run.run_id, after=action.event_id)] == [
         events[-1].event_id
     ]
@@ -134,6 +135,20 @@ def test_retry_and_expired_lease_reject_stale_owner(tmp_path) -> None:
             "action",
             {"action": "stale"},
         )
+    stats = store.stats()
+    assert stats["total"] == 2
+    assert stats["active"] == 1
+    assert stats["terminal"] == 1
+    assert stats["attempts_total"] == 4
+    assert stats["retried_runs"] == 2
+    assert stats["application_retries"] == 1
+    assert stats["lease_reclaims"] == 1
+    leased_attempts = [
+        event.payload["claim_reason"]
+        for event in store.list_events(leased.run_id)
+        if event.event_type == "run_attempt_started"
+    ]
+    assert leased_attempts == ["initial", "lease_reclaim"]
 
 
 def test_cancel_is_persistent_and_idempotent(tmp_path) -> None:

@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     agent_run_retention_days: int = 7
     agent_run_event_poll_seconds: float = 0.25
     agent_run_sse_keepalive_seconds: float = 15.0
+    agent_run_queue_warn_seconds: float = 30.0
+    agent_run_queue_critical_seconds: float = 120.0
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -114,6 +116,10 @@ class Settings(BaseSettings):
     business_e2e_fixture_origin: str = ""
     business_e2e_claim_delay_seconds: float = 0.0
     business_e2e_claim_marker: str = "data/runtime/topology-claim-delay.done"
+    business_e2e_agent_run_delay_seconds: float = 0.0
+    business_e2e_agent_run_delay_marker: str = (
+        "data/runtime/topology-agent-run-delay.done"
+    )
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -189,6 +195,13 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_RUN_EVENT_POLL_SECONDS must be positive")
         if self.agent_run_sse_keepalive_seconds <= 0:
             raise ValueError("AGENT_RUN_SSE_KEEPALIVE_SECONDS must be positive")
+        if self.agent_run_queue_warn_seconds <= 0:
+            raise ValueError("AGENT_RUN_QUEUE_WARN_SECONDS must be positive")
+        if self.agent_run_queue_critical_seconds <= self.agent_run_queue_warn_seconds:
+            raise ValueError(
+                "AGENT_RUN_QUEUE_CRITICAL_SECONDS must be greater than "
+                "AGENT_RUN_QUEUE_WARN_SECONDS"
+            )
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:
@@ -208,6 +221,10 @@ class Settings(BaseSettings):
             )
         if self.business_e2e_claim_delay_seconds < 0:
             raise ValueError("BUSINESS_E2E_CLAIM_DELAY_SECONDS cannot be negative")
+        if self.business_e2e_agent_run_delay_seconds < 0:
+            raise ValueError(
+                "BUSINESS_E2E_AGENT_RUN_DELAY_SECONDS cannot be negative"
+            )
         if self.business_e2e_mode != "disabled":
             if self.app_environment != "test":
                 raise ValueError("BUSINESS_E2E_MODE is only allowed in APP_ENVIRONMENT=test")
@@ -218,9 +235,12 @@ class Settings(BaseSettings):
                 self.business_e2e_fixture_origin,
             ):
                 raise ValueError("BUSINESS_E2E_FIXTURE_ORIGIN must be an HTTP origin")
-        elif self.business_e2e_claim_delay_seconds:
+        elif (
+            self.business_e2e_claim_delay_seconds
+            or self.business_e2e_agent_run_delay_seconds
+        ):
             raise ValueError(
-                "BUSINESS_E2E_CLAIM_DELAY_SECONDS requires BUSINESS_E2E_MODE=topology"
+                "BUSINESS_E2E delay injection requires BUSINESS_E2E_MODE=topology"
             )
         if self.security_audit_retention_days <= 0:
             raise ValueError("SECURITY_AUDIT_RETENTION_DAYS must be positive")

@@ -29,6 +29,7 @@ class TopologyE2EDriver:
         token: str,
         api_base: str,
         fixture_base: str,
+        browser_base: str,
         output: Path,
         timeout_seconds: float,
         build: bool,
@@ -42,6 +43,7 @@ class TopologyE2EDriver:
         self.token = token
         self.api_base = api_base.rstrip("/")
         self.fixture_base = fixture_base.rstrip("/")
+        self.browser_base = browser_base.rstrip("/")
         self.output = output
         self.timeout_seconds = timeout_seconds
         self.build = build
@@ -52,6 +54,7 @@ class TopologyE2EDriver:
             f"How does an employee request {token} production database access? "
             "Provide the steps and approval."
         )
+        self.durable_idempotency_key = f"topology-{token}-durable-run"
         self.report = BusinessE2EReport(
             scenario_id="production-topology-e2e",
             scenario_token=token,
@@ -137,6 +140,31 @@ class TopologyE2EDriver:
             )
         return response
 
+    def _bff(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected: int = 200,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        selected_headers = dict(headers or {})
+        if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            selected_headers["Origin"] = self.browser_base
+        response = self.client.request(
+            method,
+            f"{self.browser_base}{path}",
+            headers=selected_headers,
+            **kwargs,
+        )
+        if response.status_code != expected:
+            raise RuntimeError(
+                f"BFF {method} {path} returned {response.status_code}, "
+                f"expected {expected}: {response.text[:300]}"
+            )
+        return response
+
     def _wait(
         self,
         label: str,
@@ -214,6 +242,88 @@ class TopologyE2EDriver:
             }
         return events, headers
 
+    def _durable_payload(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "mode": "block",
+            "explore_web": True,
+            "persist_discoveries": True,
+            "budget": {
+                "max_iterations": 2,
+                "max_pages": 1,
+                "max_depth": 2,
+                "max_seconds": 60,
+            },
+        }
+
+    def _create_durable_run(self) -> tuple[dict[str, Any], dict[str, str]]:
+        response = self._bff(
+            "POST",
+            "/api/agent/runs",
+            expected=202,
+            headers={"Idempotency-Key": self.durable_idempotency_key},
+            json=self._durable_payload(),
+        )
+        return response.json(), {
+            "x-bff-request-id": response.headers.get("x-bff-request-id", ""),
+            "x-request-id": response.headers.get("x-request-id", ""),
+        }
+
+    def _durable_snapshot(self, run_id: str) -> dict[str, Any]:
+        return self._bff("GET", f"/api/agent/runs/{run_id}").json()
+
+    def _durable_events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        max_events: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        headers = {"Accept": "text/event-stream"}
+        if after > 0:
+            headers["Last-Event-ID"] = str(after)
+        events: list[dict[str, Any]] = []
+        with self.client.stream(
+            "GET",
+            f"{self.browser_base}/api/agent/runs/{run_id}/events",
+            headers=headers,
+            timeout=90.0,
+        ) as response:
+            response.raise_for_status()
+            event_id: int | None = None
+            event_name = "message"
+            data_lines: list[str] = []
+            for line in response.iter_lines():
+                if not line:
+                    if data_lines:
+                        raw = "\n".join(data_lines)
+                        try:
+                            data: Any = json.loads(raw)
+                        except json.JSONDecodeError:
+                            data = raw
+                        events.append(
+                            {"id": event_id, "event": event_name, "data": data}
+                        )
+                        if max_events is not None and len(events) >= max_events:
+                            break
+                    event_id = None
+                    event_name = "message"
+                    data_lines = []
+                    continue
+                if line.startswith("id:"):
+                    raw_id = line[3:].strip()
+                    event_id = int(raw_id) if raw_id.isdigit() else None
+                elif line.startswith("event:"):
+                    event_name = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+            response_headers = {
+                "content-type": response.headers.get("content-type", ""),
+                "x-bff-request-id": response.headers.get("x-bff-request-id", ""),
+                "x-request-id": response.headers.get("x-request-id", ""),
+            }
+        return events, response_headers
+
     @staticmethod
     def _done(events: list[tuple[str, Any]]) -> dict[str, Any]:
         done = [data for event, data in events if event == "done"]
@@ -238,30 +348,48 @@ class TopologyE2EDriver:
         updated_done: dict[str, Any] = {}
         first_worker: dict[str, Any] = {}
         second_worker: dict[str, Any] = {}
+        third_worker: dict[str, Any] = {}
+        durable_run_id = ""
         try:
             with self.recorder.stage("compose_start") as metrics:
                 self._compose("config", "--quiet")
                 if self.build:
-                    self._compose("build", "api")
-                self._compose("up", "-d", "neo4j", "qdrant", "fixture", "api")
+                    self._compose("build", "api", "frontend")
+                self._compose(
+                    "up",
+                    "-d",
+                    "neo4j",
+                    "qdrant",
+                    "fixture",
+                    "api",
+                    "frontend",
+                )
                 fixture_health = self._wait_http(
                     f"{self.fixture_base}/__control/health"
                 )
                 api_health = self._wait_http(f"{self.api_base}/api/health/ready")
+                browser_health = self._wait_http(
+                    f"{self.browser_base}/api/health"
+                )
                 metrics.update(
                     {
                         "project": self.project,
                         "fixture_health": fixture_health,
                         "api_health": api_health,
+                        "browser_bff_health": browser_health,
                     }
                 )
                 self.recorder.check(
                     "topology.api_ready",
                     api_health.get("status") == "ok"
                     and api_health.get("neo4j") is True
-                    and api_health.get("qdrant") is True,
-                    expected="ready with Neo4j and Qdrant",
-                    actual=api_health,
+                    and api_health.get("qdrant") is True
+                    and browser_health.get("status") == "ok",
+                    expected="API ready with Neo4j/Qdrant and browser BFF healthy",
+                    actual={
+                        "api": api_health,
+                        "browser_bff": browser_health,
+                    },
                     required=True,
                 )
 
@@ -667,11 +795,218 @@ class TopologyE2EDriver:
                     required=True,
                 )
 
+            with self.recorder.stage("durable_bff_disconnect") as metrics:
+                fixture_before = self._fixture("GET", "/__control/state").json()
+                submission, submit_headers = self._create_durable_run()
+                durable_run_id = str(submission.get("run_id", ""))
+                initial_events, initial_headers = self._durable_events(
+                    durable_run_id,
+                    max_events=1,
+                )
+                if len(initial_events) != 1 or initial_events[0]["id"] is None:
+                    raise RuntimeError(
+                        f"Expected one durable cursor event, received {initial_events}"
+                    )
+                initial_cursor = int(initial_events[0]["id"])
+
+                def running_run() -> dict[str, Any] | None:
+                    snapshot = self._durable_snapshot(durable_run_id)
+                    return (
+                        snapshot
+                        if snapshot.get("status") == "running"
+                        and snapshot.get("attempts") == 1
+                        else None
+                    )
+
+                running_snapshot = self._wait(
+                    "durable Run first attempt",
+                    running_run,
+                )
+                fixture_after = self._fixture("GET", "/__control/state").json()
+                metrics.update(
+                    {
+                        "run_id": durable_run_id,
+                        "created": submission.get("created"),
+                        "initial_event": initial_events[0],
+                        "status_after_disconnect": running_snapshot.get("status"),
+                        "attempts": running_snapshot.get("attempts"),
+                        "cancel_requested": running_snapshot.get("cancel_requested"),
+                        "submit_request_ids": submit_headers,
+                        "stream_request_ids": initial_headers,
+                        "fixture_request_delta": fixture_after["requests"]
+                        - fixture_before["requests"],
+                    }
+                )
+                self.report.audit_ids["durable_run"] = durable_run_id
+                self.recorder.check(
+                    "topology.durable_bff_disconnect_survives",
+                    submission.get("created") is True
+                    and initial_events[0]["event"] == "run_queued"
+                    and running_snapshot.get("status") == "running"
+                    and running_snapshot.get("cancel_requested") is False
+                    and bool(submit_headers["x-bff-request-id"])
+                    and initial_headers["content-type"].startswith(
+                        "text/event-stream"
+                    )
+                    and metrics["fixture_request_delta"] == 0,
+                    expected=(
+                        "BFF creates one Run; disconnect preserves attempt 1 "
+                        "without web fetch or cancellation"
+                    ),
+                    actual=metrics,
+                    required=True,
+                )
+
+            with self.recorder.stage("durable_worker_sigkill") as metrics:
+                self._compose("kill", "-s", "SIGKILL", "worker")
+
+                def stale_durable_worker() -> dict[str, Any] | None:
+                    records = self._workers()
+                    selected = next(
+                        (
+                            item
+                            for item in records
+                            if item.get("instance_id")
+                            == second_worker.get("instance_id")
+                        ),
+                        None,
+                    )
+                    return selected if selected and not selected.get("healthy") else None
+
+                stale = self._wait(
+                    "durable Worker heartbeat to become stale",
+                    stale_durable_worker,
+                )
+                killed_snapshot = self._durable_snapshot(durable_run_id)
+                metrics.update(
+                    {
+                        "worker_instance": stale.get("instance_id"),
+                        "worker_healthy": stale.get("healthy"),
+                        "worker_state": stale.get("state"),
+                        "run_status": killed_snapshot.get("status"),
+                        "run_attempts": killed_snapshot.get("attempts"),
+                        "cancel_requested": killed_snapshot.get("cancel_requested"),
+                    }
+                )
+                self.recorder.check(
+                    "topology.durable_sigkill_preserves_run",
+                    stale.get("healthy") is False
+                    and killed_snapshot.get("status") == "running"
+                    and killed_snapshot.get("attempts") == 1
+                    and killed_snapshot.get("cancel_requested") is False,
+                    expected="stale Worker and durable running attempt 1",
+                    actual=metrics,
+                    required=True,
+                )
+
+            with self.recorder.stage("durable_lease_replay") as metrics:
+                self._compose("up", "-d", "worker")
+
+                def durable_replacement() -> dict[str, Any] | None:
+                    records = self._workers()
+                    return next(
+                        (
+                            item
+                            for item in records
+                            if item.get("healthy")
+                            and item.get("instance_id")
+                            != second_worker.get("instance_id")
+                        ),
+                        None,
+                    )
+
+                third_worker = self._wait(
+                    "durable replacement Worker heartbeat",
+                    durable_replacement,
+                )
+
+                def durable_completed() -> dict[str, Any] | None:
+                    snapshot = self._durable_snapshot(durable_run_id)
+                    return snapshot if snapshot.get("status") == "completed" else None
+
+                completed_snapshot = self._wait(
+                    "durable lease takeover completion",
+                    durable_completed,
+                )
+                replayed_events, replay_headers = self._durable_events(
+                    durable_run_id,
+                    after=initial_cursor,
+                )
+                replayed_ids = [
+                    int(event["id"])
+                    for event in replayed_events
+                    if event["id"] is not None
+                ]
+                event_types = [str(event["event"]) for event in replayed_events]
+                done_events = [
+                    event for event in replayed_events if event["event"] == "done"
+                ]
+                replayed_submission, replay_submit_headers = (
+                    self._create_durable_run()
+                )
+                run_stats = self._api("GET", "/api/agent/runs/stats").json()
+                run_health = self._api("GET", "/api/agent/runs/health").json()
+                fixture_after = self._fixture("GET", "/__control/state").json()
+                result = completed_snapshot.get("result") or {}
+                metrics.update(
+                    {
+                        "old_worker": second_worker.get("instance_id"),
+                        "new_worker": third_worker.get("instance_id"),
+                        "completed_status": completed_snapshot.get("status"),
+                        "attempts": completed_snapshot.get("attempts"),
+                        "result_run_id": result.get("run_id"),
+                        "reconnect_from": initial_cursor,
+                        "replayed_event_ids": replayed_ids,
+                        "replayed_event_types": event_types,
+                        "replay_request_ids": replay_headers,
+                        "idempotent_created": replayed_submission.get("created"),
+                        "idempotent_run_id": replayed_submission.get("run_id"),
+                        "idempotent_request_ids": replay_submit_headers,
+                        "run_stats": run_stats,
+                        "run_health": run_health,
+                        "fixture_request_delta": fixture_after["requests"]
+                        - fixture_before["requests"],
+                        "idempotency_key_sha256": self._key_hash(
+                            self.durable_idempotency_key
+                        ),
+                    }
+                )
+                self.report.audit_ids["durable_replacement_worker"] = str(
+                    third_worker.get("instance_id", "")
+                )
+                self.recorder.check(
+                    "topology.durable_lease_replay",
+                    third_worker.get("instance_id")
+                    != second_worker.get("instance_id")
+                    and completed_snapshot.get("attempts") == 2
+                    and result.get("run_id") == durable_run_id
+                    and bool(replayed_ids)
+                    and all(event_id > initial_cursor for event_id in replayed_ids)
+                    and replayed_ids == sorted(set(replayed_ids))
+                    and event_types.count("run_attempt_started") == 2
+                    and len(done_events) == 1
+                    and replayed_submission.get("created") is False
+                    and replayed_submission.get("run_id") == durable_run_id
+                    and int(run_stats.get("lease_reclaims", 0)) >= 1
+                    and run_health.get("status") == "ok"
+                    and metrics["fixture_request_delta"] == 0,
+                    expected=(
+                        "new Worker reclaims attempt 2; Last-Event-ID replays "
+                        "one done; idempotent submit returns same hot Run"
+                    ),
+                    actual=metrics,
+                    required=True,
+                )
+
             self.report.summary = {
                 "project": self.project,
                 "canonical_url": self.canonical_url,
                 "old_worker": first_worker.get("instance_id", ""),
                 "new_worker": second_worker.get("instance_id", ""),
+                "durable_run": durable_run_id,
+                "durable_replacement_worker": third_worker.get(
+                    "instance_id", ""
+                ),
                 "cold_job_total_attempts": self._job(str(cold_job["job_id"])).get(
                     "total_attempts"
                 ),
@@ -722,6 +1057,10 @@ def main() -> None:
         default=os.getenv("TOPOLOGY_FIXTURE_BASE", "http://127.0.0.1:18080"),
     )
     parser.add_argument(
+        "--browser-base",
+        default=os.getenv("TOPOLOGY_BROWSER_BASE", "http://127.0.0.1:13000"),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("data/runtime/topology-e2e/report.json"),
@@ -740,6 +1079,7 @@ def main() -> None:
         token=args.token,
         api_base=args.api_base,
         fixture_base=args.fixture_base,
+        browser_base=args.browser_base,
         output=args.output.resolve(),
         timeout_seconds=args.timeout_seconds,
         build=not args.skip_build,

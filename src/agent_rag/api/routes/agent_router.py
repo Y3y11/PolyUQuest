@@ -12,7 +12,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from agent_rag.agent.schemas import (
     AgentQueryRequest,
@@ -29,6 +29,7 @@ from agent_rag.runs.store import (
 from agent_rag.runtime import build_query_agent
 from agent_rag.security.auth import require_role
 from agent_rag.security.models import Role
+from agent_rag.workers.status import worker_status_store
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(dependencies=[Depends(require_role(Role.reader))])
@@ -112,9 +113,74 @@ async def create_agent_run(
     )
 
 
-@router.get("/agent/runs/stats")
+@router.get(
+    "/agent/runs/stats",
+    dependencies=[Depends(require_role(Role.operator))],
+)
 async def get_agent_run_stats() -> dict[str, int | float]:
     return await asyncio.to_thread(agent_run_store.stats)
+
+
+@router.get(
+    "/agent/runs/health",
+    dependencies=[Depends(require_role(Role.operator))],
+    response_model=None,
+)
+async def get_agent_run_health(request: Request) -> dict[str, Any] | JSONResponse:
+    stats = await asyncio.to_thread(agent_run_store.stats)
+    in_process = getattr(request.app.state, "agent_run_worker", None)
+    in_process_available = bool(getattr(in_process, "is_running", False))
+    worker_records = await asyncio.to_thread(
+        worker_status_store.list,
+        limit=100,
+        max_age_seconds=settings.worker_heartbeat_max_age_seconds,
+    )
+    agent_workers = [
+        worker for worker in worker_records if "agent-run" in worker.capabilities
+    ]
+    healthy_standalone = next(
+        (worker for worker in agent_workers if worker.healthy),
+        None,
+    )
+    observed_standalone = healthy_standalone or next(iter(agent_workers), None)
+    standalone_available = healthy_standalone is not None
+    worker_available = in_process_available or standalone_available
+    oldest_waiting = float(stats["oldest_waiting_seconds"])
+    reasons: list[str] = []
+    health_status = "ok"
+    if not worker_available:
+        health_status = "critical"
+        reasons.append("no_healthy_agent_run_worker")
+    if oldest_waiting >= settings.agent_run_queue_critical_seconds:
+        health_status = "critical"
+        reasons.append("queue_wait_critical")
+    elif oldest_waiting >= settings.agent_run_queue_warn_seconds:
+        if health_status == "ok":
+            health_status = "degraded"
+        reasons.append("queue_wait_warning")
+    payload: dict[str, Any] = {
+        "status": health_status,
+        "worker_available": worker_available,
+        "worker_instance_id": (
+            observed_standalone.instance_id
+            if observed_standalone is not None
+            else None
+        ),
+        "worker_source": (
+            "in_process"
+            if in_process_available
+            else "standalone"
+            if standalone_available
+            else None
+        ),
+        "reasons": reasons,
+        "queue_warn_seconds": settings.agent_run_queue_warn_seconds,
+        "queue_critical_seconds": settings.agent_run_queue_critical_seconds,
+        "stats": stats,
+    }
+    if health_status == "critical":
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @router.get("/agent/runs/{run_id}", response_model=AgentRunSnapshot)

@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 
 from agent_rag.config import Settings
 from agent_rag.deployment import runtime_profile
+from agent_rag.e2e import topology_runtime
 from agent_rag.e2e.fixture_app import app, state
 from agent_rag.e2e.topology_driver import TopologyE2EDriver
-from agent_rag.e2e.topology_runtime import _initialize_backends
+from agent_rag.e2e.topology_runtime import _DelayOnceAgent, _initialize_backends
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,6 +57,18 @@ def test_claim_delay_requires_topology_mode() -> None:
             app_runtime_profile="remote",
             embedding_provider="siliconflow",
             business_e2e_claim_delay_seconds=1,
+        )
+
+    with (
+        patch.object(runtime_profile, "_module_available", return_value=False),
+        pytest.raises(ValueError, match="requires BUSINESS_E2E_MODE"),
+    ):
+        Settings(
+            _env_file=None,
+            app_environment="test",
+            app_runtime_profile="remote",
+            embedding_provider="siliconflow",
+            business_e2e_agent_run_delay_seconds=1,
         )
 
 
@@ -114,6 +127,42 @@ def test_topology_backend_initialization_retries_startup_race() -> None:
     sleep.assert_called_once_with(0)
 
 
+@pytest.mark.asyncio
+async def test_topology_agent_delay_is_async_and_marker_guarded(
+    tmp_path: Path,
+) -> None:
+    class Delegate:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, *_args, **_kwargs):
+            self.calls += 1
+            return "done"
+
+    delegate = Delegate()
+    delayed = _DelayOnceAgent(delegate)  # type: ignore[arg-type]
+    marker = tmp_path / "agent-delay.done"
+    with (
+        patch.object(
+            topology_runtime.settings,
+            "business_e2e_agent_run_delay_seconds",
+            5,
+        ),
+        patch.object(
+            topology_runtime.settings,
+            "business_e2e_agent_run_delay_marker",
+            str(marker),
+        ),
+        patch("agent_rag.e2e.topology_runtime.asyncio.sleep") as sleep,
+    ):
+        assert await delayed.run() == "done"
+        assert await delayed.run() == "done"
+
+    sleep.assert_awaited_once_with(5)
+    assert delegate.calls == 2
+    assert marker.read_text(encoding="utf-8") == "delay_seconds=5\n"
+
+
 def test_topology_driver_parses_audited_sse_contract(tmp_path: Path) -> None:
     driver = TopologyE2EDriver(
         compose_file=ROOT / "compose.topology-e2e.yml",
@@ -121,6 +170,7 @@ def test_topology_driver_parses_audited_sse_contract(tmp_path: Path) -> None:
         token="topology-contract",
         api_base="http://api.test",
         fixture_base="http://fixture.test",
+        browser_base="http://browser.test",
         output=tmp_path / "report.json",
         timeout_seconds=1,
         build=False,
@@ -156,21 +206,129 @@ def test_topology_driver_parses_audited_sse_contract(tmp_path: Path) -> None:
     }
 
 
+def test_topology_driver_parses_durable_cursor_replay(tmp_path: Path) -> None:
+    driver = TopologyE2EDriver(
+        compose_file=ROOT / "compose.topology-e2e.yml",
+        project="polyuquest-durable-contract",
+        token="topology-contract",
+        api_base="http://api.test",
+        fixture_base="http://fixture.test",
+        browser_base="http://browser.test",
+        output=tmp_path / "report.json",
+        timeout_seconds=1,
+        build=False,
+    )
+    driver.client.close()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["last-event-id"] == "7"
+        assert "x-api-key" not in request.headers
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-BFF-Request-ID": "bff-durable",
+                "X-Request-ID": "api-durable",
+            },
+            text=(
+                'id: 8\nevent: run_attempt_started\ndata: {"attempt":2}\n\n'
+                'id: 9\nevent: done\ndata: {"run_id":"run-contract"}\n\n'
+            ),
+        )
+
+    driver.client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        events, headers = driver._durable_events("run-contract", after=7)
+    finally:
+        driver.client.close()
+
+    assert [event["id"] for event in events] == [8, 9]
+    assert [event["event"] for event in events] == [
+        "run_attempt_started",
+        "done",
+    ]
+    assert headers["x-bff-request-id"] == "bff-durable"
+
+
+def test_topology_driver_creates_run_through_bff_without_browser_key(
+    tmp_path: Path,
+) -> None:
+    driver = TopologyE2EDriver(
+        compose_file=ROOT / "compose.topology-e2e.yml",
+        project="polyuquest-bff-contract",
+        token="topology-contract",
+        api_base="http://api.test",
+        fixture_base="http://fixture.test",
+        browser_base="http://browser.test",
+        output=tmp_path / "report.json",
+        timeout_seconds=1,
+        build=False,
+    )
+    driver.client.close()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/agent/runs"
+        assert request.headers["origin"] == "http://browser.test"
+        assert request.headers["idempotency-key"] == (
+            "topology-topology-contract-durable-run"
+        )
+        assert "x-api-key" not in request.headers
+        return httpx.Response(
+            202,
+            headers={
+                "X-BFF-Request-ID": "bff-submit",
+                "X-Request-ID": "api-submit",
+            },
+            json={
+                "run_id": "run-0123456789abcdef0123456789abcdef",
+                "status": "queued",
+                "created": True,
+            },
+        )
+
+    driver.client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        submission, headers = driver._create_durable_run()
+    finally:
+        driver.client.close()
+
+    assert submission["created"] is True
+    assert headers == {
+        "x-bff-request-id": "bff-submit",
+        "x-request-id": "api-submit",
+    }
+
+
 def test_compose_encodes_split_process_and_claim_takeover() -> None:
     raw = (ROOT / "compose.topology-e2e.yml").read_text(encoding="utf-8")
     compose = yaml.safe_load(raw)
     services = compose["services"]
 
-    assert {"api", "worker", "fixture", "neo4j", "qdrant"} <= set(services)
+    assert {"api", "worker", "frontend", "fixture", "neo4j", "qdrant"} <= set(
+        services
+    )
     assert services["api"]["command"] == ["agent-rag-serve"]
     assert services["worker"]["command"] == ["agent-rag-worker"]
     assert services["api"]["environment"]["INDEX_WORKER_ENABLED"] == "false"
+    assert services["api"]["environment"]["AGENT_RUN_WORKER_ENABLED"] == "false"
     assert services["worker"]["environment"]["INDEX_WORKER_ENABLED"] == "true"
+    assert services["worker"]["environment"]["AGENT_RUN_WORKER_ENABLED"] == "true"
+    assert services["worker"]["environment"]["AGENT_RUN_LEASE_SECONDS"] == "2"
     assert (
         services["worker"]["environment"]["BUSINESS_E2E_CLAIM_DELAY_SECONDS"]
         == "20"
     )
     assert services["worker"]["environment"]["INDEX_WORKER_LEASE_SECONDS"] == "2"
+    assert (
+        services["worker"]["environment"][
+            "BUSINESS_E2E_AGENT_RUN_DELAY_SECONDS"
+        ]
+        == "20"
+    )
+    assert services["frontend"]["environment"]["BACKEND_API_URL"] == (
+        "http://api:8000/api"
+    )
+    assert "topology_bff_api_key" in services["frontend"]["secrets"]
     assert "agent-rag-worker-health" in services["worker"]["healthcheck"]["test"]
     assert services["api"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
     assert services["worker"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
@@ -180,6 +338,7 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
     assert "topology_neo4j_data" in compose["volumes"]
     assert "topology_neo4j_logs" in compose["volumes"]
     assert "TOPOLOGY_API_AUTH_KEYS" in raw
+    assert "TOPOLOGY_BFF_API_KEY_FILE" in raw
     assert "topology-contract-reader" not in raw
     assert "topology-contract-admin" not in raw
 
@@ -197,6 +356,9 @@ def test_workflow_always_uploads_evidence_and_removes_isolated_volumes() -> None
     assert "neo4j-debug.log" in workflow
     assert "tail -n 500 /logs/debug.log" in workflow
     assert "persist-credentials: false" in workflow
+    assert "Create ephemeral topology BFF reader secret" in workflow
+    assert "Remove ephemeral topology BFF reader secret" in workflow
+    assert "root:10001" in workflow
     assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
     assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow
     assert "agent-rag-topology-e2e =" in pyproject

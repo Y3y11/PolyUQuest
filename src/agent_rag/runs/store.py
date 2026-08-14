@@ -324,6 +324,11 @@ class AgentRunStore:
             if row is None:
                 return None
             attempt = int(row["attempts"]) + 1
+            claim_reason = {
+                "queued": "initial",
+                "retry": "application_retry",
+                "running": "lease_reclaim",
+            }[str(row["status"])]
             cursor = connection.execute(
                 """UPDATE agent_runs SET status='running', attempts=?, worker_id=?,
                 lease_until=?, cancel_requested_at=NULL, last_error_code=NULL,
@@ -346,7 +351,11 @@ class AgentRunStore:
                 run_id=row["run_id"],
                 attempt=attempt,
                 event_type="run_attempt_started",
-                payload={"run_id": row["run_id"], "attempt": attempt},
+                payload={
+                    "run_id": row["run_id"],
+                    "attempt": attempt,
+                    "claim_reason": claim_reason,
+                },
                 created_at=now_iso,
             )
             claimed = connection.execute(
@@ -600,6 +609,20 @@ class AgentRunStore:
                 """SELECT min(created_at) AS oldest FROM agent_runs
                 WHERE status IN ('queued', 'retry')"""
             ).fetchone()
+            oldest_running = connection.execute(
+                """SELECT min(started_at) AS oldest FROM agent_runs
+                WHERE status='running' AND started_at IS NOT NULL"""
+            ).fetchone()
+            aggregates = connection.execute(
+                """SELECT coalesce(sum(attempts), 0) AS attempts_total,
+                coalesce(sum(CASE WHEN attempts>1 THEN 1 ELSE 0 END), 0)
+                    AS retried_runs
+                FROM agent_runs"""
+            ).fetchone()
+            attempt_events = connection.execute(
+                """SELECT payload_json FROM agent_run_events
+                WHERE event_type='run_attempt_started'"""
+            ).fetchall()
         result: dict[str, int | float] = {
             status: 0
             for status in (
@@ -612,6 +635,39 @@ class AgentRunStore:
             )
         }
         result.update({row["status"]: row["c"] for row in rows})
+        result["total"] = sum(
+            int(result[status])
+            for status in (
+                "queued",
+                "running",
+                "retry",
+                "completed",
+                "failed",
+                "cancelled",
+            )
+        )
+        result["active"] = sum(
+            int(result[status]) for status in ("queued", "running", "retry")
+        )
+        result["terminal"] = sum(
+            int(result[status])
+            for status in ("completed", "failed", "cancelled")
+        )
+        result["attempts_total"] = int(aggregates["attempts_total"] or 0)
+        result["retried_runs"] = int(aggregates["retried_runs"] or 0)
+        claim_reasons = {"application_retries": 0, "lease_reclaims": 0}
+        for event in attempt_events:
+            try:
+                reason = json.loads(event["payload_json"]).get("claim_reason")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            metric = {
+                "application_retry": "application_retries",
+                "lease_reclaim": "lease_reclaims",
+            }.get(reason)
+            if metric is not None:
+                claim_reasons[metric] += 1
+        result.update(claim_reasons)
         oldest_age = 0.0
         if oldest and oldest["oldest"]:
             oldest_age = max(
@@ -619,6 +675,15 @@ class AgentRunStore:
                 (_utc_now() - datetime.fromisoformat(oldest["oldest"])).total_seconds(),
             )
         result["oldest_waiting_seconds"] = round(oldest_age, 3)
+        oldest_running_age = 0.0
+        if oldest_running and oldest_running["oldest"]:
+            oldest_running_age = max(
+                0.0,
+                (
+                    _utc_now() - datetime.fromisoformat(oldest_running["oldest"])
+                ).total_seconds(),
+            )
+        result["oldest_running_seconds"] = round(oldest_running_age, 3)
         return result
 
     def purge_terminal(self, *, older_than_days: int) -> int:

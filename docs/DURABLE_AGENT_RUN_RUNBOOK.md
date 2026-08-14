@@ -1,6 +1,6 @@
 # PolyUQuest 持久化 Agent Run 运行手册
 
-本手册对应迭代 19。目标是让查询任务独立于浏览器/SSE 连接存活，并能按事件游标恢复。当前实现面向单机 Compose：API 与独立 Worker 共享 `runtime_data` 中的 SQLite WAL。多主机或多租户部署必须先迁移到 PostgreSQL/Redis 并增加 run ownership。
+本手册对应迭代 19～20。目标是让查询任务独立于浏览器/SSE 连接存活，能按事件游标恢复，并能通过队列年龄、重试和 lease 接管指标判断运行健康。当前实现面向单机 Compose：API 与独立 Worker 共享 `runtime_data` 中的 SQLite WAL。多主机或多租户部署必须先迁移到 PostgreSQL/Redis 并增加 run ownership。
 
 ## 1. 运行合同
 
@@ -19,6 +19,8 @@
 ```dotenv
 AGENT_RUN_STORE_PATH=data/runtime/agent_runs.sqlite3
 AGENT_RUN_WORKER_ENABLED=true
+AGENT_RUN_QUEUE_WARN_SECONDS=30
+AGENT_RUN_QUEUE_CRITICAL_SECONDS=120
 ```
 
 生产必须分离职责：
@@ -63,6 +65,7 @@ SSE 客户端应保存每个 `id:`，断线后发送 `Last-Event-ID`。不要把
 
 ```powershell
 Invoke-RestMethod -Uri http://127.0.0.1:8000/api/agent/runs/stats -Headers @{"X-API-Key"=$env:POLYUQUEST_READER_KEY}
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/agent/runs/health -Headers @{"X-API-Key"=$env:POLYUQUEST_READER_KEY}
 docker compose --env-file deploy/.env.production -f compose.production.yml logs --tail 200 worker api
 ```
 
@@ -70,6 +73,9 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 
 - `queued/retry` 是否持续增长；
 - `oldest_waiting_seconds` 是否超过正常查询等待；
+- `application_retries` 与 `lease_reclaims` 是否持续增长；
+- `attempts_total`、`retried_runs` 是否与故障/供应商错误相符；
+- `/runs/health` 是否为 `ok`，或因队列 warning 返回 `degraded`；无可用 Agent Worker 或达到 critical 阈值时会返回 503；
 - Worker 日志是否有 `agent_run_worker_started/completed/lease_lost`；
 - 同一 run 的 attempts 是否反复增加；
 - runtime volume 是否空间不足或只读；
@@ -110,6 +116,8 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - 杀死 Worker 后 lease 到期能由新实例接管；
 - API 生产进程不运行 Agent Run loop；
 - BFF 不转发浏览器 X-API-Key，只转发校验后的 Idempotency-Key/Last-Event-ID；
+- Production Topology 从真实 BFF 创建 Run，断流后强杀 Worker，并由新 Worker 以 `lease_reclaim` 完成同一 run；
+- 重连只收到 `Last-Event-ID` 之后的递增事件，且整个 Run 只有一个 `done`；
 - Python、Vitest、TypeScript、deployment validator 全绿。
 
 ## 8. 后续升级触发条件

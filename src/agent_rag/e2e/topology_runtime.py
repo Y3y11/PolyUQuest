@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -162,6 +163,37 @@ class _DelayOncePublisher:
         return self.delegate.run(tool_input)
 
 
+class _DelayOnceAgent:
+    """Create a deterministic SIGKILL window for the first durable attempt."""
+
+    def __init__(self, delegate: QueryDrivenAgent):
+        self.delegate = delegate
+
+    async def _delay_once(self) -> None:
+        delay = settings.business_e2e_agent_run_delay_seconds
+        if delay <= 0:
+            return
+        marker = Path(settings.business_e2e_agent_run_delay_marker)
+        if not marker.is_absolute():
+            marker = Path(__file__).resolve().parents[3] / marker
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(
+                marker,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"delay_seconds={delay}\n")
+        await asyncio.sleep(delay)
+
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
+        await self._delay_once()
+        return await self.delegate.run(*args, **kwargs)
+
+
 def build_publish_patch_tool() -> Any:
     _configure_crawl()
     delegate = PublishPatchTool(
@@ -176,13 +208,13 @@ def build_publish_patch_tool() -> Any:
     return _DelayOncePublisher(delegate)
 
 
-def build_query_agent() -> QueryDrivenAgent:
+def build_query_agent() -> Any:
     _configure_crawl()
     fetch_tool = FetchTrustedPageTool(
         fetcher=MappedOriginFetcher(settings.business_e2e_fixture_origin),
         store=observation_store,
     )
-    return QueryDrivenAgent(
+    agent = QueryDrivenAgent(
         search_tool=SearchTool(
             llm_factory=DeterministicLLM,
             embedder=_embedder.embed_query,
@@ -203,6 +235,9 @@ def build_query_agent() -> QueryDrivenAgent:
         lifecycle_store=page_lifecycle_store,
         telemetry=telemetry_recorder,
     )
+    if settings.app_process_role == "worker":
+        return _DelayOnceAgent(agent)
+    return agent
 
 
 def build_freshness_worker() -> FreshnessWorker:

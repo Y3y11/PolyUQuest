@@ -2,7 +2,7 @@
 
 ## 1. 门禁验证什么
 
-该门禁从真实 HTTP/SSE 客户端出发，经过独立 API 与 Worker 容器，最终验证 Neo4j、Qdrant 和共享 SQLite WAL：
+该门禁从浏览器等价 HTTP 客户端出发，经真实 Next.js BFF、独立 API 与 Worker 容器，最终验证 Neo4j、Qdrant 和共享 SQLite WAL：
 
 ```text
 401/403 鉴权
@@ -15,6 +15,9 @@
   → Freshness v2 更新
   → Fact 退休/激活
   → 更新后热查询
+  → BFF 创建持久化 Agent Run + 主动断流
+  → Agent Worker SIGKILL + heartbeat stale
+  → lease reclaim + Last-Event-ID 重放 + 幂等重提
 ```
 
 模型边界和测试网页是确定性的；FastAPI、SSE、RBAC/审计、Outbox、Worker loops、SQLite、Neo4j、Qdrant、DOM Diff、Fact Version 和 Telemetry 均使用生产实现。
@@ -35,7 +38,7 @@ Topology E2E 不替代论文指标或真实模型评测。
 - Docker Desktop daemon 已启动；
 - Docker Compose v2；
 - Python 3.12 与项目 `.venv`/`uv` 环境可用；
-- 本机端口 18000、18080 未占用；
+- 本机端口 13000、18000、18080 未占用；
 - 至少约 4 GB 可用内存和足够镜像构建空间。
 
 不需要 DeepSeek、SiliconFlow 或 Qwen API Key。
@@ -47,6 +50,7 @@ PowerShell：
 ```powershell
 $env:TOPOLOGY_E2E_TOKEN = "topology-local-001"
 $env:TOPOLOGY_E2E_PROJECT = "polyuquest-topology-local-001"
+$env:TOPOLOGY_BFF_API_KEY_FILE = "C:\secure\topology-reader.key"
 uv run agent-rag-topology-e2e `
   --project $env:TOPOLOGY_E2E_PROJECT `
   --token $env:TOPOLOGY_E2E_TOKEN `
@@ -62,6 +66,12 @@ API readiness：
 
 ```powershell
 curl.exe http://127.0.0.1:18000/api/health/ready
+```
+
+Browser BFF health：
+
+```powershell
+curl.exe http://127.0.0.1:13000/api/health
 ```
 
 Fixture 状态：
@@ -85,7 +95,7 @@ docker compose -f compose.topology-e2e.yml `
 
 重点阶段：
 
-- `compose_start`：API、Neo4j、Qdrant readiness；
+- `compose_start`：API、Neo4j、Qdrant readiness 与真实 Browser BFF health；
 - `authentication`：401/403/角色；
 - `cold_sse_query`：事件顺序、request ID、回答与 pending Job；
 - `worker_claim`：running Job 与首个 heartbeat；
@@ -95,6 +105,9 @@ docker compose -f compose.topology-e2e.yml `
 - `freshness_update`：v2 Job、版本与 Fact 时态；
 - `updated_hot_query`：新事实零抓取回答；
 - `audit_and_telemetry`：安全审计与零模型费用。
+- `durable_bff_disconnect`：BFF 202、首事件游标、主动断流后 Run 未取消；
+- `durable_worker_sigkill`：旧 Agent Worker 强杀、heartbeat stale、attempt 1 保留；
+- `durable_lease_replay`：新 Worker attempt 2 接管、游标续传、唯一 done、幂等重提、health/stats。
 
 报告和日志都位于被 Git 忽略的 `data/runtime/`。
 
@@ -134,6 +147,14 @@ docker compose -f compose.topology-e2e.yml `
 ### 8.6 Fact 没有 retired
 
 检查 PageVersion 的 modified Block、Knowledge Delta 的 previous/retired facts，以及抽取关系的 `source_block_ids` 是否绑定最具体的 procedure Block。
+
+### 8.7 Durable Run 没有被新 Worker 接管
+
+确认 API 的 `AGENT_RUN_WORKER_ENABLED=false`、Worker 为 `true`，两者共享同一 Run Store；检查旧 Worker heartbeat 已 stale、Run lease 已过期、attempt 尚未达到上限。`run_attempt_started.claim_reason` 应从 `initial` 变为 `lease_reclaim`。
+
+### 8.8 BFF 重连没有补发事件
+
+确认浏览器请求发往 13000 端口且 Origin 与 allowlist 完全一致；保存最后一个数字事件 ID，并通过 `Last-Event-ID` 重连同一 run。不要重新创建 Run，也不要把网络断开转换为 cancel。
 
 ## 9. GitHub Actions
 

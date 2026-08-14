@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from agent_rag.agent.schemas import AgentQueryRequest, AgentQueryResponse
 from agent_rag.api.routes import agent_router
@@ -132,3 +134,79 @@ async def test_cancel_is_idempotent_and_persisted(tmp_path: Path) -> None:
     assert first.status == "cancelled"
     assert second.status == "cancelled"
     assert first.cancel_requested is True
+
+
+@pytest.mark.asyncio
+async def test_run_health_uses_worker_capability_and_safe_stats(tmp_path: Path) -> None:
+    store = AgentRunStore(tmp_path / "runs.sqlite3")
+    store.create(_request(), "browser-health12345678")
+    worker = SimpleNamespace(
+        instance_id="worker-healthy",
+        healthy=True,
+        capabilities=["agent-run", "index"],
+    )
+    status_store = SimpleNamespace(list=lambda **_kwargs: [worker])
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_run_worker=None))
+    )
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        patch.object(agent_router, "worker_status_store", status_store),
+    ):
+        health = await agent_router.get_agent_run_health(request)
+
+    assert isinstance(health, dict)
+    assert health["status"] == "ok"
+    assert health["worker_source"] == "standalone"
+    assert health["stats"]["total"] == 1
+    assert "query" not in str(health).casefold()
+
+
+@pytest.mark.asyncio
+async def test_run_health_is_503_without_agent_worker(tmp_path: Path) -> None:
+    store = AgentRunStore(tmp_path / "runs.sqlite3")
+    status_store = SimpleNamespace(list=lambda **_kwargs: [])
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_run_worker=None))
+    )
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        patch.object(agent_router, "worker_status_store", status_store),
+    ):
+        health = await agent_router.get_agent_run_health(request)
+
+    assert isinstance(health, JSONResponse)
+    assert health.status_code == 503
+    assert b"no_healthy_agent_run_worker" in health.body
+
+
+@pytest.mark.asyncio
+async def test_run_health_selects_agent_worker_not_latest_other_capability(
+    tmp_path: Path,
+) -> None:
+    store = AgentRunStore(tmp_path / "runs.sqlite3")
+    index_only = SimpleNamespace(
+        instance_id="worker-new-index",
+        healthy=True,
+        capabilities=["index"],
+    )
+    agent_worker = SimpleNamespace(
+        instance_id="worker-older-agent",
+        healthy=True,
+        capabilities=["agent-run"],
+    )
+    status_store = SimpleNamespace(
+        list=lambda **_kwargs: [index_only, agent_worker]
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_run_worker=None))
+    )
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        patch.object(agent_router, "worker_status_store", status_store),
+    ):
+        health = await agent_router.get_agent_run_health(request)
+
+    assert isinstance(health, dict)
+    assert health["status"] == "ok"
+    assert health["worker_instance_id"] == "worker-older-agent"

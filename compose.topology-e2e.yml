@@ -13,6 +13,10 @@ x-runtime-environment: &runtime-environment
   AGENT_ALLOW_PERSISTENCE: "true"
   AGENT_ASYNC_INDEXING: "true"
   AGENT_LEDGER_PATH: /app/data/runtime/topology.sqlite3
+  AGENT_RUN_STORE_PATH: /app/data/runtime/agent_runs.sqlite3
+  AGENT_RUN_WORKER_POLL_SECONDS: "0.1"
+  AGENT_RUN_QUEUE_WARN_SECONDS: "10"
+  AGENT_RUN_QUEUE_CRITICAL_SECONDS: "60"
   SECURITY_AUDIT_PATH: /app/data/runtime/security.sqlite3
   BUSINESS_E2E_MODE: topology
   BUSINESS_E2E_TOKEN: ${TOPOLOGY_E2E_TOKEN:?set TOPOLOGY_E2E_TOKEN}
@@ -57,6 +61,7 @@ services:
       API_PORT: "8000"
       API_RELOAD: "false"
       AGENT_REPAIR_ON_STARTUP: "false"
+      AGENT_RUN_WORKER_ENABLED: "false"
       INDEX_WORKER_ENABLED: "false"
       FRESHNESS_WORKER_ENABLED: "false"
     ports:
@@ -92,6 +97,10 @@ services:
       APP_PROCESS_ROLE: worker
       API_AUTH_MODE: disabled
       AGENT_REPAIR_ON_STARTUP: "true"
+      AGENT_RUN_WORKER_ENABLED: "true"
+      AGENT_RUN_LEASE_SECONDS: "2"
+      AGENT_RUN_MAX_ATTEMPTS: "2"
+      AGENT_RUN_RETRY_BASE_SECONDS: "0"
       INDEX_WORKER_ENABLED: "true"
       FRESHNESS_WORKER_ENABLED: "true"
       INDEX_WORKER_POLL_SECONDS: "0.1"
@@ -102,6 +111,7 @@ services:
       FRESHNESS_WORKER_LEASE_SECONDS: "2"
       WORKER_SHUTDOWN_GRACE_SECONDS: "5"
       BUSINESS_E2E_CLAIM_DELAY_SECONDS: "20"
+      BUSINESS_E2E_AGENT_RUN_DELAY_SECONDS: "20"
     volumes:
       - topology_runtime:/app/data/runtime
       - topology_cache:/app/data/cache
@@ -119,6 +129,38 @@ services:
       start_period: 10s
       retries: 10
 
+  frontend:
+    image: ${TOPOLOGY_FRONTEND_IMAGE:-polyuquest-topology-frontend:local}
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    environment:
+      BACKEND_API_URL: http://api:8000/api
+      BFF_BACKEND_API_KEY_FILE: /run/secrets/topology_bff_api_key
+      BFF_ALLOWED_ORIGINS: ${TOPOLOGY_BROWSER_ORIGIN:-http://127.0.0.1:13000}
+      BFF_MAX_REQUEST_BYTES: "65536"
+      BFF_UPSTREAM_TIMEOUT_SECONDS: "120"
+    secrets:
+      - topology_bff_api_key
+    ports:
+      - "127.0.0.1:${TOPOLOGY_FRONTEND_PORT:-13000}:3000"
+    networks:
+      - backend
+      - fixture_net
+    depends_on:
+      api:
+        condition: service_healthy
+
   fixture:
     <<: *app-service
     command: ["agent-rag-e2e-fixture"]
@@ -126,6 +168,7 @@ services:
       <<: *runtime-environment
       APP_PROCESS_ROLE: api
       API_AUTH_MODE: disabled
+      AGENT_RUN_WORKER_ENABLED: "false"
       INDEX_WORKER_ENABLED: "false"
       FRESHNESS_WORKER_ENABLED: "false"
       FIXTURE_PORT: "8080"
@@ -183,3 +226,7 @@ volumes:
   topology_cache:
   topology_neo4j_data:
   topology_neo4j_logs:
+
+secrets:
+  topology_bff_api_key:
+    file: ${TOPOLOGY_BFF_API_KEY_FILE:?set TOPOLOGY_BFF_API_KEY_FILE}

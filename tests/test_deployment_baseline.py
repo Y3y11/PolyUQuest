@@ -101,6 +101,16 @@ class ProductionConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "WORKER_SHUTDOWN_GRACE_SECONDS"):
             Settings(_env_file=None, worker_shutdown_grace_seconds=0)
 
+    def test_agent_run_queue_thresholds_are_ordered(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "AGENT_RUN_QUEUE_CRITICAL_SECONDS"
+        ):
+            Settings(
+                _env_file=None,
+                agent_run_queue_warn_seconds=30,
+                agent_run_queue_critical_seconds=30,
+            )
+
     def test_production_requires_explicit_runtime_profile(self) -> None:
         with self.assertRaisesRegex(ValidationError, "explicit APP_RUNTIME_PROFILE"):
             _production_settings(app_runtime_profile="auto")
