@@ -266,7 +266,11 @@ async def freshness_worker_lifespan():
     try:
         yield worker
     finally:
-        worker.stop()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        from agent_rag.workers.lifecycle import stop_worker_task
+
+        await stop_worker_task(
+            worker,
+            task,
+            grace_seconds=settings.worker_shutdown_grace_seconds,
+            worker_name="freshness",
+        )

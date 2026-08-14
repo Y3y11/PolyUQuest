@@ -31,6 +31,7 @@ def _load_yaml(name: str) -> dict[str, Any]:
 class Settings(BaseSettings):
     # Deployment and API security boundary
     app_environment: Literal["development", "test", "production"] = "development"
+    app_process_role: Literal["api", "worker"] = "api"
     api_auth_mode: Literal["disabled", "api_key"] = "disabled"
     # Comma-separated key_id:role:sha256 entries. Raw keys never belong here.
     api_auth_keys: str = ""
@@ -92,6 +93,7 @@ class Settings(BaseSettings):
     freshness_worker_enabled: bool = True
     freshness_worker_poll_seconds: float = 5.0
     freshness_worker_lease_seconds: int = 120
+    worker_shutdown_grace_seconds: float = 30.0
 
     # CORS
     # 逗号分隔的 origin 白名单。生产环境务必改为明确域名，例如
@@ -154,12 +156,52 @@ class Settings(BaseSettings):
             raise ValueError("FRESHNESS_WORKER_POLL_SECONDS must be positive")
         if self.freshness_worker_lease_seconds <= 0:
             raise ValueError("FRESHNESS_WORKER_LEASE_SECONDS must be positive")
+        if self.worker_shutdown_grace_seconds <= 0:
+            raise ValueError("WORKER_SHUTDOWN_GRACE_SECONDS must be positive")
         if self.security_audit_retention_days <= 0:
             raise ValueError("SECURITY_AUDIT_RETENTION_DAYS must be positive")
-        if self.app_environment == "production" and self.api_auth_mode == "disabled":
+        if (
+            self.app_environment == "production"
+            and self.app_process_role == "api"
+            and self.api_auth_mode == "disabled"
+        ):
             raise ValueError(
                 "API_AUTH_MODE=disabled is not allowed in APP_ENVIRONMENT=production"
             )
+        if self.app_environment == "production":
+            if self.api_reload:
+                raise ValueError("API_RELOAD=true is not allowed in production")
+            if not self.neo4j_password or self.neo4j_password == "agent_rag_polyu":
+                raise ValueError(
+                    "production requires a non-default NEO4J_PASSWORD"
+                )
+            provider_keys = {
+                "deepseek": self.deepseek_api_key,
+                "qwen": self.qwen_api_key,
+                "siliconflow": self.siliconflow_api_key,
+            }
+            if self.llm_provider not in provider_keys:
+                raise ValueError(f"unsupported production LLM_PROVIDER={self.llm_provider}")
+            if self.llm_provider in provider_keys and not provider_keys[self.llm_provider]:
+                raise ValueError(
+                    f"LLM_PROVIDER={self.llm_provider} requires its API key in production"
+                )
+            if self.embedding_provider not in {"local", "siliconflow", "api"}:
+                raise ValueError(
+                    f"unsupported production EMBEDDING_PROVIDER={self.embedding_provider}"
+                )
+            if self.embedding_provider == "siliconflow" and not self.siliconflow_api_key:
+                raise ValueError(
+                    "EMBEDDING_PROVIDER=siliconflow requires SILICONFLOW_API_KEY "
+                    "in production"
+                )
+            if self.embedding_provider == "api" and (
+                not self.embedding_api_key or not self.embedding_base_url
+            ):
+                raise ValueError(
+                    "EMBEDDING_PROVIDER=api requires EMBEDDING_API_KEY and "
+                    "EMBEDDING_BASE_URL in production"
+                )
         if self.api_auth_mode == "api_key":
             parse_api_key_records(self.api_auth_keys, require_admin=True)
 

@@ -54,6 +54,10 @@ class SecurityConfigurationTests(unittest.TestCase):
             app_environment="production",
             api_auth_mode="api_key",
             api_auth_keys=_records(),
+            neo4j_password="production-only-password",
+            llm_provider="deepseek",
+            deepseek_api_key="deepseek-test-key",
+            embedding_provider="local",
         )
         self.assertEqual(settings.api_auth_mode, "api_key")
         self.assertNotIn("admin-secret", settings.api_auth_keys)

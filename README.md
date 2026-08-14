@@ -282,6 +282,28 @@ configuration; the core planner/evaluator does not contain PolyU department or
 degree rules, so the same constraint checks can be reused for product versions,
 policies, services, and other intranet entities.
 
+### Production deployment baseline
+
+The repository includes reproducible non-root backend/frontend images and a
+single-host production Compose topology. API serving and the durable index /
+freshness worker use the same application image but run as separate processes;
+Neo4j and Qdrant remain on an internal network. Production configuration fails
+fast on anonymous auth, a default graph password, reload mode, or missing
+credentials for the selected remote model provider.
+
+```bash
+python scripts/validate_deployment.py
+docker compose --env-file deploy/.env.production -f compose.production.yml config --quiet
+docker compose --env-file deploy/.env.production -f compose.production.yml up -d
+python scripts/deployment_ops.py --env-file deploy/.env.production verify
+```
+
+The guarded operations CLI performs checksum-backed cold backups and requires
+an explicit destructive confirmation before restore. See
+[`docs/PRODUCTION_DEPLOYMENT_BASELINE_PRD.md`](docs/PRODUCTION_DEPLOYMENT_BASELINE_PRD.md)
+and
+[`docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md`](docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md).
+
 ---
 
 ## Note on data

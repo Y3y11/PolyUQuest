@@ -12,6 +12,8 @@ __pycache__/
 # === Environment / secrets ===
 .env
 .env.local
+deploy/.env.production
+deploy/.env.production.local
 
 # === Node / Next.js ===
 node_modules/
@@ -31,6 +33,7 @@ data/raw_html/
 data/metadata/
 data/runtime/
 logs/
+backups/
 
 # Local engineering iteration diary; product PRDs remain tracked.
 docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md

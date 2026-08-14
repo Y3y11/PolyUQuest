@@ -31,6 +31,8 @@ logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    if settings.app_environment == "production" and settings.app_process_role != "api":
+        raise RuntimeError("FastAPI production process requires APP_PROCESS_ROLE=api")
     app.state.startup_complete = False
     app.state.embedding_ready = False
     app.state.bm25_ready = False
@@ -67,48 +69,14 @@ async def _lifespan(app: FastAPI):
         app.state.embedding_ready = True
     except Exception as exc:
         logger.warning("embedding_warmup_failed", error=str(exc))
-    if settings.agent_repair_on_startup:
-        try:
-            from agent_rag.tools.patch_recovery import recover_pending_patches
+    if (
+        settings.agent_repair_on_startup
+        or settings.index_worker_enabled
+        or settings.freshness_worker_enabled
+    ):
+        from agent_rag.workers.bootstrap import bootstrap_background_state
 
-            report = await asyncio.to_thread(recover_pending_patches)
-            logger.info(
-                "patch_recovery_completed",
-                scanned=report.scanned,
-                recovered=report.recovered,
-                skipped=report.skipped,
-                failed=report.failed,
-            )
-        except Exception as exc:
-            logger.warning("patch_recovery_scan_failed", error=str(exc))
-    try:
-        from agent_rag.freshness import page_lifecycle_store
-        from agent_rag.storage.neo4j_store import Neo4jStore
-
-        graph = Neo4jStore()
-        try:
-            indexed_pages = await asyncio.to_thread(graph.list_indexed_webpages)
-            bootstrapped = await asyncio.to_thread(
-                page_lifecycle_store.bootstrap_indexed_pages,
-                indexed_pages,
-            )
-        finally:
-            graph.close()
-        if bootstrapped:
-            logger.info("freshness_targets_bootstrapped", count=bootstrapped)
-        from agent_rag.indexing.outbox import index_outbox
-
-        jobs = {
-            job.job_id: (job.status, job.last_error)
-            for job in index_outbox.list(limit=10000)
-        }
-        lifecycle_recovery = await asyncio.to_thread(
-            page_lifecycle_store.recover_stale_indexing, jobs
-        )
-        if any(lifecycle_recovery.values()):
-            logger.info("freshness_lifecycle_recovered", **lifecycle_recovery)
-    except Exception as exc:
-        logger.warning("freshness_bootstrap_failed", error=str(exc))
+        await bootstrap_background_state()
     from agent_rag.freshness.worker import freshness_worker_lifespan
     from agent_rag.indexing.worker import index_worker_lifespan
 

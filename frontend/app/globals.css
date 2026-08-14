@@ -10,6 +10,10 @@
 
 :root,
 [data-theme="light"] {
+  /* System stacks keep production builds deterministic and network-free. */
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   --color-surface: 251 247 240;        /* #FBF7F0 cream */
   --color-surface-alt: 242 235 221;    /* #F2EBDD warm sand */
   --color-surface-sunk: 234 224 204;   /* #EAE0CC deeper sand for code/Naive panel */

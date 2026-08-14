@@ -44,6 +44,7 @@ dev = [
 
 [project.scripts]
 agent-rag-serve = "agent_rag.api.main:start"
+agent-rag-worker = "agent_rag.workers.main:start"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_rag"]
