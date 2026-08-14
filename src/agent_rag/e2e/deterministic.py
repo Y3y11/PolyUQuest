@@ -112,13 +112,22 @@ class DeterministicKnowledgeExtractor:
         **_kwargs: Any,
     ) -> PageExtractionResult:
         self.calls += 1
-        procedure = next(
-            (
-                block
-                for block in blocks
-                if "approval" in str(block.get("content", "")).casefold()
-            ),
-            None,
+        candidates = [
+            block
+            for block in blocks
+            if "approval" in str(block.get("content", "")).casefold()
+        ]
+        procedure = (
+            max(
+                candidates,
+                key=lambda block: (
+                    "step 1" in str(block.get("content", "")).casefold(),
+                    str(block.get("heading_context", "")).count(">"),
+                    -len(str(block.get("content", ""))),
+                ),
+            )
+            if candidates
+            else None
         )
         if procedure is None:
             return PageExtractionResult()

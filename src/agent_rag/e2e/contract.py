@@ -71,7 +71,7 @@ class ContractViolationError(RuntimeError):
 
 def compare_reused_block_vectors(
     *,
-    unchanged_ids: list[str],
+    same_id_reuse_ids: list[str],
     relocated_pairs: list[tuple[str, str]],
     vectors_before: dict[str, list[float]],
     vectors_after: dict[str, list[float]],
@@ -79,7 +79,7 @@ def compare_reused_block_vectors(
     """Prove vector reuse across both stable-ID and relocated DOM blocks."""
     same_id_pairs = [
         (block_id, block_id)
-        for block_id in unchanged_ids
+        for block_id in same_id_reuse_ids
         if block_id in vectors_before and block_id in vectors_after
     ]
     relocated_vector_pairs = [

@@ -433,6 +433,7 @@ class BusinessE2EScenario:
                         consistency_before = graph.check_consistency()
                     finally:
                         graph.close()
+                    initial_fact_stats = restarted.facts.stats()
                     metrics.update(
                         {
                             "job_status": recovered_job.status,
@@ -442,6 +443,7 @@ class BusinessE2EScenario:
                             "version_status": first_version.status if first_version else "missing",
                             "blocks": len(blocks_before),
                             "block_vectors": len(vectors_before),
+                            "fact_stats": initial_fact_stats,
                             "consistency": consistency_before,
                         }
                     )
@@ -465,6 +467,8 @@ class BusinessE2EScenario:
                         bool(page)
                         and len(blocks_before) >= 2
                         and len(vectors_before) == len(blocks_before)
+                        and initial_fact_stats["active"]
+                        >= int(contract.get("min_active_facts", 1))
                         and consistency_before["blocks_consistent"]
                         and consistency_before["entities_consistent"],
                         expected="page + all block vectors + consistent entity IDs",
@@ -600,7 +604,10 @@ class BusinessE2EScenario:
                     finally:
                         graph.close()
                     vector_reuse = compare_reused_block_vectors(
-                        unchanged_ids=update_version.diff.unchanged_ids,
+                        same_id_reuse_ids=[
+                            *update_version.diff.unchanged_ids,
+                            *update_version.diff.metadata_changed_ids,
+                        ],
                         relocated_pairs=[
                             (item.old_id, item.new_id)
                             for item in update_version.diff.relocated
@@ -610,6 +617,7 @@ class BusinessE2EScenario:
                     )
                     fact_stats = restarted.facts.stats()
                     embedding_after_update = self.embedder.snapshot()
+                    knowledge_delta = update_version.knowledge_delta
                     metrics.update(
                         {
                             "version_id": update_version.version_id,
@@ -617,10 +625,23 @@ class BusinessE2EScenario:
                             "new_blocks": update_version.diff.new_count,
                             "modified_blocks": len(update_version.diff.modified_ids),
                             "unchanged_blocks": len(update_version.diff.unchanged_ids),
+                            "metadata_changed_blocks": len(
+                                update_version.diff.metadata_changed_ids
+                            ),
                             "relocated_blocks": len(update_version.diff.relocated),
                             "block_embeddings": update_version.block_embeddings,
                             "reused_block_vectors": update_version.reused_block_vectors,
                             "vector_reuse": vector_reuse,
+                            "knowledge_delta": {
+                                "facts": len(knowledge_delta.facts),
+                                "previous_facts": len(knowledge_delta.previous_facts),
+                                "retired_facts": len(knowledge_delta.retired_facts),
+                                "affected_old_blocks": len(
+                                    knowledge_delta.affected_old_block_ids
+                                ),
+                            }
+                            if knowledge_delta is not None
+                            else None,
                             "fact_stats": fact_stats,
                             "consistency": consistency_after,
                             "embedding_delta": {

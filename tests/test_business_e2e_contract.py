@@ -20,6 +20,7 @@ from agent_rag.quality import PageQualityGate
 from agent_rag.tools.fetch import FetchTrustedPageTool
 from agent_rag.tools.observations import ObservationStore
 from agent_rag.tools.schemas import FetchInput
+from agent_rag.versioning import build_block_diff
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -102,6 +103,32 @@ def test_fixture_fetch_uses_real_http_etag_and_structure() -> None:
             assert unchanged.not_modified
             assert unchanged.metadata.status_code == 304
             assert site.request_count == 2
+
+            site.set_version(2)
+            changed = asyncio.run(
+                tool.run(
+                    FetchInput(
+                        url=site.canonical_url,
+                        query="production database access steps approval",
+                        run_id="run-fetch-v2",
+                        if_none_match=first.metadata.etag,
+                    )
+                )
+            )
+            changed_record = store.get(changed.observation_id)
+            assert changed_record is not None
+            plan = build_block_diff(record.blocks, changed_record.blocks)
+            extractor = DeterministicKnowledgeExtractor("e2e-fetch")
+            old_fact = extractor(site.canonical_url, record.blocks).relations[0]
+            changed_blocks = [
+                block
+                for block in changed_record.blocks
+                if block["block_id"] in plan.modified_ids
+            ]
+            new_fact = extractor(site.canonical_url, changed_blocks).relations[0]
+            assert old_fact.source_block_refs == plan.modified_ids
+            assert new_fact.source_block_refs == plan.modified_ids
+            assert site.request_count == 3
     finally:
         site.close()
         crawl_config.clear()
@@ -149,7 +176,7 @@ def test_report_is_atomic_machine_readable_and_redacts_secrets(tmp_path: Path) -
 
 def test_vector_reuse_contract_includes_relocated_blocks() -> None:
     evidence = compare_reused_block_vectors(
-        unchanged_ids=["stable"],
+        same_id_reuse_ids=["stable"],
         relocated_pairs=[("old-location", "new-location")],
         vectors_before={
             "stable": [0.1, 0.2],
