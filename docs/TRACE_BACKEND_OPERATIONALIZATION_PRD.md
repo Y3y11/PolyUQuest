@@ -204,6 +204,23 @@ Backend URL 只允许 http/https origin，不允许 credentials、query、fragme
 11. 问答 API 在 Collector/Tempo 停止时仍可创建/执行 Run；
 12. Python、前端、Ruff、deployment/supply-chain、Compose 与 GitHub Linux 门禁通过。
 
+### 10.1 本轮验收证据
+
+| 验收项 | 结果 |
+|---|---|
+| Trace/RBAC 定向测试 | 28 passed，61 subtests passed |
+| Python 全量回归 | 273 passed，65 subtests passed |
+| Frontend Vitest / TypeScript | 20 passed / passed |
+| Ruff / deployment / supply-chain / Compose | passed |
+| Distributed Tracing E2E | run `31862991912` passed |
+| 真实 trace | 3 spans；3 个标准化名称；2 条父子关系；16.006s 完整可查询 |
+| 双层隐私 canary | 6/6 raw Tempo 与安全 view 均无泄漏 |
+| E2E artifact | ID `9241158185`；SHA-256 `3e1181c1a064e547d1607d7186423a78d96bf67e47e43bebfd61123e0a52eeb3` |
+| Production Topology / Business / Container Supply | runs `31862831819` / `31862831800` / `31862831799` passed |
+| Browser BFF SSE | run `31862991789` passed |
+
+真实 E2E 过程中发现并修复了测试 internal 网络阻断、Tempo 部分结果窗口、后置 redaction 删除 `service.name`、Collector exporter 弃用别名以及 validator 缺失文件异常；完整过程只记录在本地迭代文档，不随仓库发布。
+
 ## 11. 配置、部署与运维
 
 单机启用顺序：
