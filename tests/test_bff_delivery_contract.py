@@ -57,6 +57,7 @@ def test_bff_e2e_compose_is_isolated_and_uses_docker_secret() -> None:
     assert frontend["environment"]["BACKEND_API_URL"] == "http://upstream:18081/api"
     assert "BFF_BACKEND_API_KEY" not in frontend["environment"]
     assert upstream["read_only"] is True
+    assert upstream["user"] == "10001:10001"
     assert set(upstream["networks"]) == {"bff_backend", "bff_control"}
     assert "BFF_E2E_EXPECTED_KEY_SHA256" in upstream["environment"]
     assert upstream["secrets"] == ["internal_identity_secret"]
