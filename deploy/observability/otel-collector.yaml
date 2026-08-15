@@ -27,6 +27,7 @@ processors:
   redaction/privacy:
     allow_all_keys: false
     allowed_keys:
+      - service.name
       - attempt
       - status
       - stage

@@ -179,6 +179,19 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("tempo image must use the reviewed 2.10.7 release")
     if collector.get("command") != ["--config=/etc/otelcol-contrib/config.yaml"]:
         errors.append("otel-collector must load the repository privacy configuration")
+    collector_config_path = root / "deploy" / "observability" / "otel-collector.yaml"
+    try:
+        collector_config = yaml.safe_load(
+            collector_config_path.read_text(encoding="utf-8")
+        )
+    except (OSError, yaml.YAMLError):
+        collector_config = {}
+        errors.append("otel-collector privacy configuration is missing or invalid")
+    redaction_config = (collector_config or {}).get("processors", {}).get(
+        "redaction/privacy", {}
+    )
+    if "service.name" not in _list(redaction_config.get("allowed_keys")):
+        errors.append("otel-collector privacy allowlist must preserve service.name")
     if tempo.get("command") != [
         "-config.file=/etc/tempo/tempo.yaml",
         "-target=all",
