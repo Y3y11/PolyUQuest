@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
-from agent_rag.tracing.backend import TempoTraceClient
+from agent_rag.tracing.backend import TempoTraceClient, TraceWaterfall, project_trace
 
 _CANARIES = (
     "resource-canary-private",
@@ -130,13 +130,25 @@ async def run_gate(
     trace_id = await asyncio.to_thread(_emit_canary, otlp_endpoint)
     deadline = time.monotonic() + timeout_seconds
     raw: dict[str, Any] | None = None
+    preview: TraceWaterfall | None = None
     while time.monotonic() < deadline:
         raw = await _query_raw(tempo_url, trace_id)
         if raw is not None:
-            break
+            preview = project_trace(raw, trace_id=trace_id, max_spans=50)
+            if preview.returned_span_count >= 3:
+                break
         await asyncio.sleep(0.25)
     if raw is None:
         raise TimeoutError("Tempo did not make the trace queryable")
+    if preview is None or preview.returned_span_count < 3:
+        safe_diagnostic = {
+            "returned_span_count": preview.returned_span_count if preview else 0,
+            "services": preview.services if preview else [],
+            "span_names": [span.name for span in preview.spans] if preview else [],
+        }
+        raise TimeoutError(
+            f"Tempo did not make the complete trace queryable: {safe_diagnostic}"
+        )
 
     raw_text = json.dumps(raw, ensure_ascii=False)
     raw_privacy = {canary: canary not in raw_text for canary in _CANARIES}
