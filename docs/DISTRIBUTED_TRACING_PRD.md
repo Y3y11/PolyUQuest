@@ -171,6 +171,27 @@ Browser
 9. canary 不出现在 span attributes、响应或 exporter payload；
 10. Python、前端、TypeScript、Ruff、Compose 与生产拓扑回归通过。
 
+### 10.1 本地验收证据（2026-08-15）
+
+- Python 全量：250 passed，另有 64 subtests passed；
+- tracing/Run/API/Outbox 定向：29 passed；
+- 前端 Vitest：20 passed；TypeScript `--noEmit --incremental false` passed；
+- 本轮文件 Ruff、deployment policy、supply-chain policy 与 `git diff --check` passed；
+- production 与 topology Compose config passed；
+- 跨队列测试证明 producer → Agent consumer → Index consumer 共用 trace ID，且 SQLite 重开后上下文仍可恢复；
+- 隐私 canary、非法/全零 traceparent、disabled 模式和 BFF 不复制浏览器 header 的合同均通过。
+
+### 10.2 GitHub Linux 与容器验收证据（commit `195ddbd`）
+
+- Production Topology E2E Gate：run `31861124729`，success；
+- Browser BFF SSE Gate：run `31861124796`，success，证明 Next.js 14 instrumentation 可完成真实生产构建和同源流式代理；
+- Container Supply Chain Gate：run `31861124828`，success，包含镜像构建、只读启动、runtime contract、SBOM 与漏洞门禁；
+- Business E2E Gate：run `31861124776`，success；
+- topology artifact `9240623745`，digest `sha256:bf3c4ee92b68bb37071b91bcc42d51e21e5f3b9b39c423ef428702f5f37bb6b8`；
+- BFF artifact `9240624439`，digest `sha256:a783c11fb750408efd10596c265759887e02e8875baefe5b02dac8138a845703`；
+- supply-chain artifact `9240655904`，digest `sha256:20c06e2377486ae74cc61ed2904c3ddb0e10922d76d63f44986885fde770e350`；
+- business artifact `9240600615`，digest `sha256:83a9d3540ed5b62d521cf3d31f6fe5dae6d474c5f67417973f0224dfe759562c`。
+
 ## 11. 配置、部署与运维
 
 - `OTEL_TRACING_MODE=disabled|propagate|otlp`；
