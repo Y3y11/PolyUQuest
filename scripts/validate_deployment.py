@@ -119,6 +119,16 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("worker must not receive API_AUTH_KEYS")
     if worker_environment.get("API_AUTH_MODE") != "disabled":
         errors.append("worker HTTP auth must remain disabled because it serves no API")
+    if api_environment.get("END_USER_IDENTITY_MODE") != "signed_jwt":
+        errors.append("api must require signed end-user identity assertions")
+    if api_environment.get("END_USER_IDENTITY_SECRET_FILE") != (
+        "/run/secrets/internal_identity_secret"
+    ):
+        errors.append("api must read the internal identity key from a mounted secret")
+    if "internal_identity_secret" not in _list(api.get("secrets")):
+        errors.append("api must mount the internal identity secret")
+    if any("identity_secret" in str(item) for item in _list(worker.get("secrets"))):
+        errors.append("worker must not receive end-user identity secrets")
     if api_environment.get("INDEX_WORKER_ENABLED") != "false":
         errors.append("api must disable the in-process index worker")
     if api_environment.get("FRESHNESS_WORKER_ENABLED") != "false":
@@ -209,6 +219,18 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("frontend: raw BFF key must not be stored in container environment")
     if "bff_backend_api_key" not in _list(frontend.get("secrets")):
         errors.append("frontend: bff_backend_api_key secret mount is required")
+    if frontend_environment.get("BFF_IDENTITY_MODE") != "signed_jwt":
+        errors.append("frontend: signed end-user identity mode is required")
+    expected_identity_paths = {
+        "BFF_GATEWAY_IDENTITY_SECRET_FILE": "/run/secrets/gateway_identity_secret",
+        "BFF_INTERNAL_IDENTITY_SECRET_FILE": "/run/secrets/internal_identity_secret",
+    }
+    for name, expected in expected_identity_paths.items():
+        if frontend_environment.get(name) != expected:
+            errors.append(f"frontend: {name} must use its mounted secret")
+    for name in ("gateway_identity_secret", "internal_identity_secret"):
+        if name not in _list(frontend.get("secrets")):
+            errors.append(f"frontend: {name} secret mount is required")
     secret = payload.get("secrets", {}).get("bff_backend_api_key", {})
     if "${BFF_BACKEND_API_KEY_FILE:?" not in str(secret.get("file", "")):
         errors.append("bff_backend_api_key must require an operator-provided host file")
@@ -220,6 +242,8 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         "${CORS_ALLOW_ORIGINS:?",
         "${BFF_ALLOWED_ORIGINS:?",
         "${BFF_BACKEND_API_KEY_FILE:?",
+        "${BFF_GATEWAY_IDENTITY_SECRET_FILE:?",
+        "${INTERNAL_IDENTITY_SECRET_FILE:?",
     )
     for marker in required_variables:
         if marker not in compose_text:

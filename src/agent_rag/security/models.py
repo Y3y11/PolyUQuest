@@ -23,6 +23,24 @@ class Principal(BaseModel):
     auth_mode: str
 
 
+class EndUserIdentity(BaseModel):
+    """Trusted end-user identity propagated separately from workload auth."""
+
+    subject: str
+    tenant_id: str
+    groups: tuple[str, ...] = ()
+    issuer: str
+    token_id: str = ""
+
+
+LEGACY_END_USER = EndUserIdentity(
+    subject="legacy-user",
+    tenant_id="legacy-tenant",
+    groups=(),
+    issuer="development-bypass",
+)
+
+
 class SecurityAuditEvent(BaseModel):
     event_id: str
     request_id: str

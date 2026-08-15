@@ -25,6 +25,8 @@ TERMINAL_AGENT_RUN_STATUSES: frozenset[AgentRunStatus] = frozenset(
 
 class AgentRunRecord(BaseModel):
     run_id: str
+    tenant_id: str = "legacy-tenant"
+    owner_subject: str = "legacy-user"
     idempotency_key: str
     request_fingerprint: str
     request_json: str

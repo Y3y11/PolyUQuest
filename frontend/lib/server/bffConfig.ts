@@ -8,6 +8,15 @@ export interface BffConfig {
   upstreamTimeoutMs: number;
   requireOriginForUnsafeMethods: boolean;
   tracingMode: "disabled" | "propagate" | "otlp";
+  identityMode: "disabled" | "signed_jwt";
+  gatewayIdentitySecret: string;
+  internalIdentitySecret: string;
+  gatewayIdentityIssuer: string;
+  gatewayIdentityAudience: string;
+  internalIdentityIssuer: string;
+  internalIdentityAudience: string;
+  identityMaxTtlSeconds: number;
+  identityClockSkewSeconds: number;
 }
 
 type SecretReader = (path: string) => string;
@@ -67,6 +76,20 @@ function validateSecret(secret: string): string {
   return secret;
 }
 
+function validateIdentitySecret(secret: string, name: string): string {
+  if (new TextEncoder().encode(secret).byteLength < 32 || secret.length > 512) {
+    throw new Error(`${name} must contain 32-512 bytes`);
+  }
+  return secret;
+}
+
+function validateIdentityName(value: string, name: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(value)) {
+    throw new Error(`${name} has an invalid format`);
+  }
+  return value;
+}
+
 export function loadBffConfig(
   env: NodeJS.ProcessEnv = process.env,
   readSecretFile: SecretReader = (path) => readFileSync(path, "utf8")
@@ -88,6 +111,38 @@ export function loadBffConfig(
     : env.BFF_BACKEND_API_KEY?.trim() || "";
   if (production && !secret) {
     throw new Error("BFF backend API key secret file is empty");
+  }
+  const identityMode = env.BFF_IDENTITY_MODE || (production ? "signed_jwt" : "disabled");
+  if (!['disabled', 'signed_jwt'].includes(identityMode)) {
+    throw new Error("BFF_IDENTITY_MODE must be disabled or signed_jwt");
+  }
+  if (production && identityMode !== "signed_jwt") {
+    throw new Error("BFF_IDENTITY_MODE must be signed_jwt in production");
+  }
+  const gatewaySecretPath = env.BFF_GATEWAY_IDENTITY_SECRET_FILE?.trim() || "";
+  const internalSecretPath = env.BFF_INTERNAL_IDENTITY_SECRET_FILE?.trim() || "";
+  if (identityMode === "signed_jwt" && (!gatewaySecretPath || !internalSecretPath)) {
+    throw new Error(
+      "BFF_GATEWAY_IDENTITY_SECRET_FILE and BFF_INTERNAL_IDENTITY_SECRET_FILE are required"
+    );
+  }
+  const gatewayIdentitySecret = gatewaySecretPath
+    ? validateIdentitySecret(
+        readSecretFile(gatewaySecretPath).trim(),
+        "BFF gateway identity secret"
+      )
+    : "";
+  const internalIdentitySecret = internalSecretPath
+    ? validateIdentitySecret(
+        readSecretFile(internalSecretPath).trim(),
+        "BFF internal identity secret"
+      )
+    : "";
+  if (
+    identityMode === "signed_jwt" &&
+    gatewayIdentitySecret === internalIdentitySecret
+  ) {
+    throw new Error("BFF gateway and internal identity secrets must be distinct");
   }
   const originSource =
     env.BFF_ALLOWED_ORIGINS ||
@@ -114,6 +169,39 @@ export function loadBffConfig(
       ) * 1_000,
     requireOriginForUnsafeMethods: production,
     tracingMode: tracingMode as BffConfig["tracingMode"],
+    identityMode: identityMode as BffConfig["identityMode"],
+    gatewayIdentitySecret,
+    internalIdentitySecret,
+    gatewayIdentityIssuer: validateIdentityName(
+      env.BFF_GATEWAY_IDENTITY_ISSUER || "polyuquest-gateway",
+      "BFF_GATEWAY_IDENTITY_ISSUER"
+    ),
+    gatewayIdentityAudience: validateIdentityName(
+      env.BFF_GATEWAY_IDENTITY_AUDIENCE || "polyuquest-bff",
+      "BFF_GATEWAY_IDENTITY_AUDIENCE"
+    ),
+    internalIdentityIssuer: validateIdentityName(
+      env.BFF_INTERNAL_IDENTITY_ISSUER || "polyuquest-bff",
+      "BFF_INTERNAL_IDENTITY_ISSUER"
+    ),
+    internalIdentityAudience: validateIdentityName(
+      env.BFF_INTERNAL_IDENTITY_AUDIENCE || "polyuquest-api",
+      "BFF_INTERNAL_IDENTITY_AUDIENCE"
+    ),
+    identityMaxTtlSeconds: parsePositiveInt(
+      env.BFF_IDENTITY_MAX_TTL_SECONDS,
+      120,
+      "BFF_IDENTITY_MAX_TTL_SECONDS",
+      10,
+      300
+    ),
+    identityClockSkewSeconds: parsePositiveInt(
+      env.BFF_IDENTITY_CLOCK_SKEW_SECONDS,
+      5,
+      "BFF_IDENTITY_CLOCK_SKEW_SECONDS",
+      0,
+      30
+    ),
   };
 }
 

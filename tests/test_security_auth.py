@@ -55,6 +55,8 @@ class SecurityConfigurationTests(unittest.TestCase):
             app_runtime_profile="local-ml",
             api_auth_mode="api_key",
             api_auth_keys=_records(),
+            end_user_identity_mode="signed_jwt",
+            end_user_identity_secret_file="/run/secrets/internal_identity_secret",
             neo4j_password="production-only-password",
             llm_provider="deepseek",
             deepseek_api_key="deepseek-test-key",

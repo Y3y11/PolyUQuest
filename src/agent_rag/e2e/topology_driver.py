@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -50,6 +52,7 @@ class TopologyE2EDriver:
         self.canonical_url = f"http://e2e.test/access/{token}/"
         self.reader_key = f"{token}-reader"
         self.admin_key = f"{token}-admin"
+        self.gateway_identity_secret = f"{token}-gateway-identity-secret-v1"
         self.query = (
             f"How does an employee request {token} production database access? "
             "Provide the steps and approval."
@@ -103,6 +106,33 @@ class TopologyE2EDriver:
         selected = self.reader_key if role == "reader" else self.admin_key
         return {"X-API-Key": selected}
 
+    def _gateway_identity_assertion(self) -> str:
+        now = int(time.time())
+        header = {"alg": "HS256", "typ": "polyuquest-gateway+jwt"}
+        claims = {
+            "v": 1,
+            "iss": "polyuquest-gateway",
+            "aud": "polyuquest-bff",
+            "sub": "topology-user",
+            "tenant_id": "topology-tenant",
+            "groups": ["e2e"],
+            "iat": now,
+            "exp": now + 60,
+            "jti": f"topology-{uuid.uuid4().hex}",
+        }
+
+        def encode(value: dict[str, Any]) -> str:
+            raw = json.dumps(value, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        unsigned = f"{encode(header)}.{encode(claims)}"
+        signature = hmac.new(
+            self.gateway_identity_secret.encode(),
+            unsigned.encode(),
+            hashlib.sha256,
+        ).digest()
+        return f"{unsigned}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
     def _api(
         self,
         method: str,
@@ -150,6 +180,10 @@ class TopologyE2EDriver:
         **kwargs: Any,
     ) -> httpx.Response:
         selected_headers = dict(headers or {})
+        if path == "/api/agent/runs" or path.startswith("/api/agent/runs/"):
+            selected_headers["X-PolyUQuest-Gateway-Identity"] = (
+                self._gateway_identity_assertion()
+            )
         if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             selected_headers["Origin"] = self.browser_base
         response = self.client.request(
@@ -280,6 +314,7 @@ class TopologyE2EDriver:
         max_events: int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         headers = {"Accept": "text/event-stream"}
+        headers["X-PolyUQuest-Gateway-Identity"] = self._gateway_identity_assertion()
         if after > 0:
             headers["Last-Event-ID"] = str(after)
         events: list[dict[str, Any]] = []

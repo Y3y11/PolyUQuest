@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -30,6 +31,8 @@ from agent_rag.runs.models import (
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._~-]{16,128}$")
 _MAX_EVENT_BYTES = 1_048_576
+_LEGACY_TENANT = "legacy-tenant"
+_LEGACY_OWNER = "legacy-user"
 
 
 class IdempotencyConflictError(ValueError):
@@ -64,6 +67,18 @@ def _request_payload(request: AgentQueryRequest) -> tuple[str, str]:
         separators=(",", ":"),
     )
     return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _enable_wal_with_retry(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 class AgentRunStore:
@@ -108,13 +123,16 @@ class AgentRunStore:
             connection = sqlite3.connect(self.path, timeout=5.0)
             try:
                 connection.row_factory = sqlite3.Row
-                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA busy_timeout=5000")
+                _enable_wal_with_retry(connection)
                 connection.execute("PRAGMA synchronous=NORMAL")
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS agent_runs (
                         run_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL DEFAULT 'legacy-tenant',
+                        owner_subject TEXT NOT NULL DEFAULT 'legacy-user',
                         idempotency_key TEXT NOT NULL UNIQUE,
                         request_fingerprint TEXT NOT NULL,
                         request_json TEXT NOT NULL,
@@ -171,6 +189,10 @@ class AgentRunStore:
                     );
                     """
                 )
+                # API and standalone Worker can initialize the shared SQLite file
+                # concurrently. Serialize schema inspection and migration so two
+                # processes cannot both decide to add the same column.
+                connection.execute("BEGIN IMMEDIATE")
                 columns = {
                     row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")
                 }
@@ -178,7 +200,20 @@ class AgentRunStore:
                     connection.execute(
                         "ALTER TABLE agent_runs ADD COLUMN traceparent TEXT NOT NULL DEFAULT ''"
                     )
-                connection.execute("BEGIN IMMEDIATE")
+                if "tenant_id" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN tenant_id TEXT NOT NULL "
+                        "DEFAULT 'legacy-tenant'"
+                    )
+                if "owner_subject" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN owner_subject TEXT NOT NULL "
+                        "DEFAULT 'legacy-user'"
+                    )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_runs_owner "
+                    "ON agent_runs(tenant_id, owner_subject, created_at)"
+                )
                 self._backfill_attempt_counters(connection)
                 connection.commit()
             finally:
@@ -229,6 +264,15 @@ class AgentRunStore:
                 "Idempotency-Key must be 16-128 URL-safe characters"
             )
         return selected
+
+    @staticmethod
+    def _scoped_idempotency_key(
+        key: str, *, tenant_id: str, owner_subject: str
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{tenant_id}\0{owner_subject}\0{key}".encode()
+        ).hexdigest()
+        return f"ik1-{digest}"
 
     @staticmethod
     def _append_event_tx(
@@ -309,10 +353,15 @@ class AgentRunStore:
         max_attempts: int | None = None,
         admission_policy: AgentRunAdmissionPolicy | None = None,
         traceparent: str = "",
+        tenant_id: str = _LEGACY_TENANT,
+        owner_subject: str = _LEGACY_OWNER,
     ) -> tuple[AgentRunRecord, bool]:
         from agent_rag.tracing.runtime import validate_traceparent
 
-        key = self.validate_idempotency_key(idempotency_key)
+        raw_key = self.validate_idempotency_key(idempotency_key)
+        key = self._scoped_idempotency_key(
+            raw_key, tenant_id=tenant_id, owner_subject=owner_subject
+        )
         request_json, fingerprint = _request_payload(request)
         policy = (
             admission_policy
@@ -322,6 +371,8 @@ class AgentRunStore:
         now = _iso()
         run = AgentRunRecord(
             run_id=f"run-{uuid.uuid4().hex}",
+            tenant_id=tenant_id,
+            owner_subject=owner_subject,
             idempotency_key=key,
             request_fingerprint=fingerprint,
             request_json=request_json,
@@ -338,6 +389,16 @@ class AgentRunStore:
             existing = connection.execute(
                 "SELECT * FROM agent_runs WHERE idempotency_key=?", (key,)
             ).fetchone()
+            if (
+                existing is None
+                and tenant_id == _LEGACY_TENANT
+                and owner_subject == _LEGACY_OWNER
+            ):
+                existing = connection.execute(
+                    """SELECT * FROM agent_runs WHERE idempotency_key=?
+                    AND tenant_id=? AND owner_subject=?""",
+                    (raw_key, _LEGACY_TENANT, _LEGACY_OWNER),
+                ).fetchone()
             if existing is not None:
                 current = self._from_run_row(existing)
                 if current.request_fingerprint != fingerprint:
@@ -387,14 +448,17 @@ class AgentRunStore:
                 else:
                     connection.execute(
                         """INSERT INTO agent_runs(
-                            run_id, idempotency_key, request_fingerprint,
+                            run_id, tenant_id, owner_subject, idempotency_key,
+                            request_fingerprint,
                             request_json, traceparent, result_json, status, attempts,
                             max_attempts, available_at, lease_until, worker_id,
                             cancel_requested_at, last_error_code, last_error,
                             created_at, updated_at, started_at, completed_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             run.run_id,
+                            run.tenant_id,
+                            run.owner_subject,
                             run.idempotency_key,
                             run.request_fingerprint,
                             run.request_json,
@@ -441,6 +505,17 @@ class AgentRunStore:
             ).fetchone()
         return self._from_run_row(row) if row is not None else None
 
+    def get_for_owner(
+        self, run_id: str, *, tenant_id: str, owner_subject: str
+    ) -> AgentRunRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM agent_runs WHERE run_id=?
+                AND tenant_id=? AND owner_subject=?""",
+                (run_id, tenant_id, owner_subject),
+            ).fetchone()
+        return self._from_run_row(row) if row is not None else None
+
     def list_events(
         self, run_id: str, *, after: int = 0, limit: int = 500
     ) -> list[AgentRunEvent]:
@@ -456,11 +531,47 @@ class AgentRunStore:
             ).fetchall()
         return [self._from_event_row(row) for row in rows]
 
+    def list_events_for_owner(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        owner_subject: str,
+        after: int = 0,
+        limit: int = 500,
+    ) -> list[AgentRunEvent]:
+        if after < 0:
+            raise ValueError("after must be non-negative")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT event.* FROM agent_run_events AS event
+                JOIN agent_runs AS run ON run.run_id=event.run_id
+                WHERE event.run_id=? AND run.tenant_id=? AND run.owner_subject=?
+                AND event.event_id>? ORDER BY event.event_id ASC LIMIT ?""",
+                (run_id, tenant_id, owner_subject, after, limit),
+            ).fetchall()
+        return [self._from_event_row(row) for row in rows]
+
     def last_event_id(self, run_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT max(event_id) AS event_id FROM agent_run_events WHERE run_id=?",
                 (run_id,),
+            ).fetchone()
+        return int(row["event_id"] or 0)
+
+    def last_event_id_for_owner(
+        self, run_id: str, *, tenant_id: str, owner_subject: str
+    ) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT max(event.event_id) AS event_id
+                FROM agent_run_events AS event
+                JOIN agent_runs AS run ON run.run_id=event.run_id
+                WHERE event.run_id=? AND run.tenant_id=? AND run.owner_subject=?""",
+                (run_id, tenant_id, owner_subject),
             ).fetchone()
         return int(row["event_id"] or 0)
 
@@ -752,6 +863,15 @@ class AgentRunStore:
                 "SELECT * FROM agent_runs WHERE run_id=?", (run_id,)
             ).fetchone()
         return self._from_run_row(updated)
+
+    def request_cancel_for_owner(
+        self, run_id: str, *, tenant_id: str, owner_subject: str
+    ) -> AgentRunRecord:
+        if self.get_for_owner(
+            run_id, tenant_id=tenant_id, owner_subject=owner_subject
+        ) is None:
+            raise KeyError(run_id)
+        return self.request_cancel(run_id)
 
     def is_cancel_requested(self, run_id: str, worker_id: str, attempt: int) -> bool:
         with self._connect() as connection:

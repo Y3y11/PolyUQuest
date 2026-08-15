@@ -1,10 +1,16 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 
 const port = Number(process.env.BFF_E2E_UPSTREAM_PORT || "18081");
 const expectedHash = process.env.BFF_E2E_EXPECTED_KEY_SHA256 || "";
+const identitySecretPath = process.env.BFF_E2E_INTERNAL_IDENTITY_SECRET_FILE || "";
 if (!/^[a-f0-9]{64}$/.test(expectedHash)) {
   throw new Error("BFF_E2E_EXPECTED_KEY_SHA256 is required");
+}
+const identitySecret = readFileSync(identitySecretPath, "utf8").trim();
+if (Buffer.byteLength(identitySecret) < 32) {
+  throw new Error("BFF_E2E internal identity secret is invalid");
 }
 
 const state = {
@@ -13,7 +19,40 @@ const state = {
   authentication_failures: 0,
   cancelled_streams: 0,
   completed_streams: 0,
+  verified_identities: 0,
 };
+
+function validInternalIdentity(token) {
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) return false;
+  const [headerPart, payloadPart, signaturePart] = token.split(".");
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(Buffer.from(headerPart, "base64url").toString("utf8"));
+    claims = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8"));
+  } catch {
+    return false;
+  }
+  if (header.alg !== "HS256" || header.typ !== "polyuquest-internal+jwt") return false;
+  const expected = createHmac("sha256", identitySecret)
+    .update(`${headerPart}.${payloadPart}`)
+    .digest();
+  const supplied = Buffer.from(signaturePart, "base64url");
+  const now = Math.floor(Date.now() / 1000);
+  return (
+    supplied.length === expected.length &&
+    timingSafeEqual(supplied, expected) &&
+    claims.iss === "polyuquest-bff" &&
+    claims.aud === "polyuquest-api" &&
+    claims.sub === "browser-e2e-user" &&
+    claims.tenant_id === "browser-e2e-tenant" &&
+    Number.isInteger(claims.iat) &&
+    Number.isInteger(claims.exp) &&
+    claims.iat <= now + 5 &&
+    claims.exp >= now - 5 &&
+    claims.exp - claims.iat <= 120
+  );
+}
 
 function json(response, status, payload) {
   const body = JSON.stringify(payload);
@@ -41,7 +80,9 @@ const server = createServer(async (request, response) => {
     json(response, 200, state);
     return;
   }
-  if (request.method !== "POST" || url.pathname !== "/api/agent/query/stream") {
+  const streamRoute = request.method === "POST" && url.pathname === "/api/agent/query/stream";
+  const durableRoute = request.method === "POST" && url.pathname === "/api/agent/runs";
+  if (!streamRoute && !durableRoute) {
     json(response, 404, { detail: "not found" });
     return;
   }
@@ -55,6 +96,18 @@ const server = createServer(async (request, response) => {
     return;
   }
   state.authenticated_requests += 1;
+
+  if (durableRoute) {
+    const identity = String(request.headers["x-polyuquest-identity"] || "");
+    if (!validInternalIdentity(identity)) {
+      json(response, 401, { detail: "invalid internal identity" });
+      return;
+    }
+    await readBody(request);
+    state.verified_identities += 1;
+    json(response, 202, { run_id: "run-0123456789abcdef0123456789abcdef" });
+    return;
+  }
 
   let payload;
   try {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -174,3 +176,60 @@ def test_cancel_is_persistent_and_idempotent(tmp_path) -> None:
         "cancel_requested",
         "cancelled",
     ]
+
+
+def test_legacy_schema_is_migrated_without_reassigning_existing_runs(tmp_path) -> None:
+    path = tmp_path / "legacy-runs.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE agent_runs (
+            run_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            request_fingerprint TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            traceparent TEXT NOT NULL DEFAULT '',
+            result_json TEXT,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL,
+            available_at TEXT NOT NULL,
+            lease_until TEXT,
+            worker_id TEXT,
+            cancel_requested_at TEXT,
+            last_error_code TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO agent_runs(
+            run_id, idempotency_key, request_fingerprint, request_json,
+            status, max_attempts, available_at, created_at, updated_at
+        ) VALUES (
+            'run-0123456789abcdef0123456789abcdef',
+            'legacy-browser-key-0001', 'fingerprint',
+            '{"query":"legacy","explore_web":false,"persist_discoveries":false}',
+            'queued', 2, '2026-01-01T00:00:00+00:00',
+            '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        stores = list(executor.map(lambda _index: AgentRunStore(path), range(2)))
+    store = stores[0]
+    migrated = store.get("run-0123456789abcdef0123456789abcdef")
+    assert migrated is not None
+    assert migrated.tenant_id == "legacy-tenant"
+    assert migrated.owner_subject == "legacy-user"
+
+    connection = sqlite3.connect(path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")}
+    indexes = {row[1] for row in connection.execute("PRAGMA index_list(agent_runs)")}
+    connection.close()
+    assert {"tenant_id", "owner_subject"}.issubset(columns)
+    assert "idx_agent_runs_owner" in indexes

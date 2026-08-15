@@ -1,13 +1,16 @@
 import { rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { createHmac, randomUUID } from "node:crypto";
 
 const baseUrl = process.env.BFF_E2E_BASE_URL || "http://127.0.0.1:13000";
 const upstreamUrl = process.env.BFF_E2E_UPSTREAM_URL || "http://127.0.0.1:13001";
 const allowedOrigin = process.env.BFF_E2E_ALLOWED_ORIGIN || baseUrl;
 const secretMarker = process.env.BFF_E2E_SECRET_MARKER;
+const gatewayIdentitySecret = process.env.BFF_E2E_GATEWAY_IDENTITY_SECRET;
 const output = process.env.BFF_E2E_OUTPUT || "frontend/artifacts/bff-e2e/report.json";
 if (!secretMarker) throw new Error("BFF_E2E_SECRET_MARKER is required");
+if (!gatewayIdentitySecret) throw new Error("BFF_E2E_GATEWAY_IDENTITY_SECRET is required");
 const startedAt = new Date();
 const checks = [];
 
@@ -46,6 +49,26 @@ function agentBody(query) {
     freshness: "auto",
     budget: { max_iterations: 1, max_pages: 1, max_depth: 1, max_seconds: 10 },
   });
+}
+
+function gatewayIdentityAssertion() {
+  const now = Math.floor(Date.now() / 1000);
+  const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+  const unsigned = `${encode({ alg: "HS256", typ: "polyuquest-gateway+jwt" })}.${encode({
+    v: 1,
+    iss: "polyuquest-gateway",
+    aud: "polyuquest-bff",
+    sub: "browser-e2e-user",
+    tenant_id: "browser-e2e-tenant",
+    groups: ["e2e"],
+    iat: now,
+    exp: now + 60,
+    jti: `browser-${randomUUID().replaceAll("-", "")}`,
+  })}`;
+  const signature = createHmac("sha256", gatewayIdentitySecret)
+    .update(unsigned)
+    .digest("base64url");
+  return `${unsigned}.${signature}`;
 }
 
 async function postAgent(query, origin = allowedOrigin) {
@@ -105,6 +128,37 @@ async function run() {
       afterRejected.total_requests === before.total_requests
   );
 
+  const missingIdentity = await fetch(`${baseUrl}/api/agent/runs`, {
+    method: "POST",
+    headers: {
+      Origin: allowedOrigin,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "browser-e2e-missing-identity",
+    },
+    body: agentBody("durable-missing-identity"),
+  });
+  const durable = await fetch(`${baseUrl}/api/agent/runs`, {
+    method: "POST",
+    headers: {
+      Origin: allowedOrigin,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "browser-e2e-valid-identity",
+      "X-PolyUQuest-Gateway-Identity": gatewayIdentityAssertion(),
+    },
+    body: agentBody("durable-valid-identity"),
+  });
+  const identityState = await state();
+  check(
+    "bff.identity_boundary",
+    "missing identity rejected pre-upstream; valid identity re-signed for API",
+    {
+      missing_status: missingIdentity.status,
+      valid_status: durable.status,
+      verified_identities: identityState.verified_identities,
+    },
+    missingIdentity.status === 401 && durable.status === 202 && identityState.verified_identities === 1
+  );
+
   const streamResponse = await postAgent("stream-contract");
   const stream = await readStream(streamResponse);
   check(
@@ -156,9 +210,9 @@ async function run() {
   );
   check(
     "bff.server_key_injection",
-    "three authenticated upstream calls and no key mismatch",
+    "four authenticated upstream calls and no key mismatch",
     finalState,
-    finalState.authenticated_requests === 3 && finalState.authentication_failures === 0
+    finalState.authenticated_requests === 4 && finalState.authentication_failures === 0
   );
 
   const home = await (await fetch(`${baseUrl}/`)).text();

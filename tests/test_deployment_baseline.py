@@ -31,6 +31,8 @@ def _production_settings(**overrides):
         "app_environment": "production",
         "api_auth_mode": "api_key",
         "api_auth_keys": f"admin:admin:{hash_api_key('test-admin-secret')}",
+        "end_user_identity_mode": "signed_jwt",
+        "end_user_identity_secret_file": "/run/secrets/internal_identity_secret",
         "neo4j_password": "non-default-production-password",
         "llm_provider": "deepseek",
         "deepseek_api_key": "deepseek-test-key",

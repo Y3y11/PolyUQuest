@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     api_auth_mode: Literal["disabled", "api_key"] = "disabled"
     # Comma-separated key_id:role:sha256 entries. Raw keys never belong here.
     api_auth_keys: str = ""
+    end_user_identity_mode: Literal["disabled", "signed_jwt"] = "disabled"
+    end_user_identity_secret_file: str = ""
+    end_user_identity_issuer: str = "polyuquest-bff"
+    end_user_identity_audience: str = "polyuquest-api"
+    end_user_identity_max_ttl_seconds: int = 120
+    end_user_identity_clock_skew_seconds: int = 5
     security_audit_path: str = "data/runtime/security_audit.sqlite3"
     security_audit_retention_days: int = 90
 
@@ -350,6 +356,20 @@ class Settings(BaseSettings):
             )
         if self.security_audit_retention_days <= 0:
             raise ValueError("SECURITY_AUDIT_RETENTION_DAYS must be positive")
+        if not 10 <= self.end_user_identity_max_ttl_seconds <= 300:
+            raise ValueError("END_USER_IDENTITY_MAX_TTL_SECONDS must be between 10 and 300")
+        if not 0 <= self.end_user_identity_clock_skew_seconds <= 30:
+            raise ValueError("END_USER_IDENTITY_CLOCK_SKEW_SECONDS must be between 0 and 30")
+        for name, value in (
+            ("END_USER_IDENTITY_ISSUER", self.end_user_identity_issuer),
+            ("END_USER_IDENTITY_AUDIENCE", self.end_user_identity_audience),
+        ):
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
+                raise ValueError(f"{name} has an invalid format")
+        if self.end_user_identity_mode == "signed_jwt" and not self.end_user_identity_secret_file:
+            raise ValueError(
+                "END_USER_IDENTITY_SECRET_FILE is required in signed_jwt mode"
+            )
         if (
             self.app_environment == "production"
             and self.app_process_role == "api"
@@ -357,6 +377,14 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "API_AUTH_MODE=disabled is not allowed in APP_ENVIRONMENT=production"
+            )
+        if (
+            self.app_environment == "production"
+            and self.app_process_role == "api"
+            and self.end_user_identity_mode != "signed_jwt"
+        ):
+            raise ValueError(
+                "production API requires END_USER_IDENTITY_MODE=signed_jwt"
             )
         if (
             self.app_environment == "production"

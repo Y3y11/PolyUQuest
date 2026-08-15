@@ -34,7 +34,8 @@ from agent_rag.runs.store import (
 )
 from agent_rag.runtime import build_query_agent
 from agent_rag.security.auth import require_role
-from agent_rag.security.models import Role
+from agent_rag.security.end_user import EndUser
+from agent_rag.security.models import EndUserIdentity, Role
 from agent_rag.tracing import trace_runtime
 from agent_rag.workers.status import worker_status_store
 
@@ -61,17 +62,27 @@ def _require_run_id(run_id: str) -> str:
     return run_id
 
 
-async def _get_run(run_id: str) -> AgentRunRecord:
+async def _get_run(run_id: str, identity: EndUserIdentity) -> AgentRunRecord:
     selected = _require_run_id(run_id)
-    run = await asyncio.to_thread(agent_run_store.get, selected)
+    run = await asyncio.to_thread(
+        agent_run_store.get_for_owner,
+        selected,
+        tenant_id=identity.tenant_id,
+        owner_subject=identity.subject,
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="Agent Run not found")
     return run
 
 
-async def _snapshot(run: AgentRunRecord) -> AgentRunSnapshot:
+async def _snapshot(
+    run: AgentRunRecord, identity: EndUserIdentity
+) -> AgentRunSnapshot:
     last_event_id = await asyncio.to_thread(
-        agent_run_store.last_event_id, run.run_id
+        agent_run_store.last_event_id_for_owner,
+        run.run_id,
+        tenant_id=identity.tenant_id,
+        owner_subject=identity.subject,
     )
     return AgentRunSnapshot(
         run_id=run.run_id,
@@ -101,6 +112,8 @@ async def create_agent_run(
     request: AgentQueryRequest,
     idempotency_key: str = Header(alias="Idempotency-Key"),
     traceparent: str | None = Header(default=None, alias="traceparent"),
+    *,
+    identity: EndUser,
 ) -> AgentRunSubmission:
     _enforce_persistence_gate(request)
     try:
@@ -114,6 +127,8 @@ async def create_agent_run(
                 request,
                 idempotency_key,
                 traceparent=active_trace.traceparent,
+                tenant_id=identity.tenant_id,
+                owner_subject=identity.subject,
             )
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -241,14 +256,15 @@ async def get_agent_run_health(request: Request) -> dict[str, Any] | JSONRespons
 
 
 @router.get("/agent/runs/{run_id}", response_model=AgentRunSnapshot)
-async def get_agent_run(run_id: str) -> AgentRunSnapshot:
-    return await _snapshot(await _get_run(run_id))
+async def get_agent_run(run_id: str, identity: EndUser) -> AgentRunSnapshot:
+    return await _snapshot(await _get_run(run_id, identity), identity)
 
 
 async def _replay_run_events(
     request: Request,
     run_id: str,
     after: int,
+    identity: EndUserIdentity,
 ) -> AsyncIterator[str]:
     cursor = after
     last_keepalive = time.monotonic()
@@ -256,16 +272,29 @@ async def _replay_run_events(
         if await request.is_disconnected():
             return
         events = await asyncio.to_thread(
-            agent_run_store.list_events, run_id, after=cursor, limit=500
+            agent_run_store.list_events_for_owner,
+            run_id,
+            tenant_id=identity.tenant_id,
+            owner_subject=identity.subject,
+            after=cursor,
+            limit=500,
         )
         for event in events:
             cursor = event.event_id
             yield _stored_sse_event(event)
-        run = await asyncio.to_thread(agent_run_store.get, run_id)
+        run = await asyncio.to_thread(
+            agent_run_store.get_for_owner,
+            run_id,
+            tenant_id=identity.tenant_id,
+            owner_subject=identity.subject,
+        )
         if run is None:
             return
         if run.is_terminal and cursor >= await asyncio.to_thread(
-            agent_run_store.last_event_id, run_id
+            agent_run_store.last_event_id_for_owner,
+            run_id,
+            tenant_id=identity.tenant_id,
+            owner_subject=identity.subject,
         ):
             return
         now = time.monotonic()
@@ -279,17 +308,18 @@ async def _replay_run_events(
 async def stream_agent_run_events(
     request: Request,
     run_id: str,
+    identity: EndUser,
     after: int = Query(default=0, ge=0),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    run = await _get_run(run_id)
+    run = await _get_run(run_id, identity)
     cursor = after
     if last_event_id is not None:
         if not last_event_id.isdigit():
             raise HTTPException(status_code=422, detail="Last-Event-ID must be numeric")
         cursor = max(cursor, int(last_event_id))
     return StreamingResponse(
-        _replay_run_events(request, run.run_id, cursor),
+        _replay_run_events(request, run.run_id, cursor, identity),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -299,10 +329,15 @@ async def stream_agent_run_events(
 
 
 @router.post("/agent/runs/{run_id}/cancel", response_model=AgentRunSnapshot)
-async def cancel_agent_run(run_id: str) -> AgentRunSnapshot:
-    run = await _get_run(run_id)
-    updated = await asyncio.to_thread(agent_run_store.request_cancel, run.run_id)
-    return await _snapshot(updated)
+async def cancel_agent_run(run_id: str, identity: EndUser) -> AgentRunSnapshot:
+    run = await _get_run(run_id, identity)
+    updated = await asyncio.to_thread(
+        agent_run_store.request_cancel_for_owner,
+        run.run_id,
+        tenant_id=identity.tenant_id,
+        owner_subject=identity.subject,
+    )
+    return await _snapshot(updated, identity)
 
 
 @router.post("/agent/query", response_model=AgentQueryResponse)

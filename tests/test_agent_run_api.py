@@ -12,6 +12,7 @@ from agent_rag.agent.schemas import AgentBudget, AgentQueryRequest, AgentQueryRe
 from agent_rag.api.routes import agent_router
 from agent_rag.runs.admission import AgentRunAdmissionPolicy
 from agent_rag.runs.store import AgentRunStore
+from agent_rag.security.models import EndUserIdentity
 
 
 class ConnectedRequest:
@@ -36,6 +37,14 @@ def _response(run_id: str) -> AgentQueryResponse:
     )
 
 
+def _identity(subject: str = "alice", tenant_id: str = "tenant-a") -> EndUserIdentity:
+    return EndUserIdentity(
+        subject=subject,
+        tenant_id=tenant_id,
+        issuer="test-gateway",
+    )
+
+
 def _admission_policy(
     *, max_active: int = 1, max_waiting: int = 1
 ) -> AgentRunAdmissionPolicy:
@@ -56,12 +65,12 @@ async def test_create_snapshot_and_idempotency_conflict(tmp_path: Path) -> None:
     store = AgentRunStore(tmp_path / "runs.sqlite3")
     with patch.object(agent_router, "agent_run_store", store):
         created = await agent_router.create_agent_run(
-            _request(), "browser-1234567890abcdef"
+            _request(), "browser-1234567890abcdef", identity=_identity()
         )
         replayed = await agent_router.create_agent_run(
-            _request(), "browser-1234567890abcdef"
+            _request(), "browser-1234567890abcdef", identity=_identity()
         )
-        snapshot = await agent_router.get_agent_run(created.run_id)
+        snapshot = await agent_router.get_agent_run(created.run_id, _identity())
         stats = await agent_router.get_agent_run_stats()
 
         assert created.created is True
@@ -73,7 +82,9 @@ async def test_create_snapshot_and_idempotency_conflict(tmp_path: Path) -> None:
 
         with pytest.raises(HTTPException) as raised:
             await agent_router.create_agent_run(
-                _request("A different query"), "browser-1234567890abcdef"
+                _request("A different query"),
+                "browser-1234567890abcdef",
+                identity=_identity(),
             )
         assert raised.value.status_code == 409
 
@@ -103,9 +114,12 @@ async def test_event_replay_honours_cursor_and_terminal_state(tmp_path: Path) ->
             chunk
             async for chunk in agent_router._replay_run_events(
                 ConnectedRequest(), run.run_id, after=1
+                , identity=_identity("legacy-user", "legacy-tenant")
             )
         ]
-        snapshot = await agent_router.get_agent_run(run.run_id)
+        snapshot = await agent_router.get_agent_run(
+            run.run_id, _identity("legacy-user", "legacy-tenant")
+        )
 
     replay = "".join(chunks)
     assert "id: 1\n" not in replay
@@ -130,6 +144,7 @@ async def test_disconnect_does_not_cancel_durable_run(tmp_path: Path) -> None:
             chunk
             async for chunk in agent_router._replay_run_events(
                 DisconnectedRequest(), run.run_id, after=0
+                , identity=_identity("legacy-user", "legacy-tenant")
             )
         ]
     persisted = store.get(run.run_id)
@@ -144,12 +159,48 @@ async def test_cancel_is_idempotent_and_persisted(tmp_path: Path) -> None:
     store = AgentRunStore(tmp_path / "runs.sqlite3")
     run, _ = store.create(_request(), "browser-cancel123456789")
     with patch.object(agent_router, "agent_run_store", store):
-        first = await agent_router.cancel_agent_run(run.run_id)
-        second = await agent_router.cancel_agent_run(run.run_id)
+        identity = _identity("legacy-user", "legacy-tenant")
+        first = await agent_router.cancel_agent_run(run.run_id, identity)
+        second = await agent_router.cancel_agent_run(run.run_id, identity)
 
     assert first.status == "cancelled"
     assert second.status == "cancelled"
     assert first.cancel_requested is True
+
+
+@pytest.mark.asyncio
+async def test_run_ownership_hides_cross_owner_access_and_scopes_idempotency(
+    tmp_path: Path,
+) -> None:
+    store = AgentRunStore(tmp_path / "runs.sqlite3")
+    alice = _identity("alice", "tenant-a")
+    bob = _identity("bob", "tenant-a")
+    shared_key = "browser-shared-123456789"
+    with patch.object(agent_router, "agent_run_store", store):
+        alice_run = await agent_router.create_agent_run(
+            _request(), shared_key, identity=alice
+        )
+        bob_run = await agent_router.create_agent_run(
+            _request(), shared_key, identity=bob
+        )
+
+        assert alice_run.run_id != bob_run.run_id
+        assert (await agent_router.get_agent_run(alice_run.run_id, alice)).run_id == (
+            alice_run.run_id
+        )
+        for operation in (
+            lambda: agent_router.get_agent_run(alice_run.run_id, bob),
+            lambda: agent_router.cancel_agent_run(alice_run.run_id, bob),
+        ):
+            with pytest.raises(HTTPException) as raised:
+                await operation()
+            assert raised.value.status_code == 404
+            assert raised.value.detail == "Agent Run not found"
+
+    persisted = store.get(alice_run.run_id)
+    assert persisted is not None
+    assert persisted.status == "queued"
+    assert persisted.owner_subject == "alice"
 
 
 @pytest.mark.asyncio
@@ -242,6 +293,7 @@ async def test_run_creation_returns_safe_429_with_retry_after(tmp_path: Path) ->
         await agent_router.create_agent_run(
             _request("Second"),
             "browser-capacity-000002",
+            identity=_identity(),
         )
 
     error = raised.value
@@ -272,6 +324,7 @@ async def test_run_creation_returns_structured_budget_rejection(tmp_path: Path) 
         await agent_router.create_agent_run(
             request,
             "browser-budget-0000001",
+            identity=_identity(),
         )
 
     assert raised.value.status_code == 422

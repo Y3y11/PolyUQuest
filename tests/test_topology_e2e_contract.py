@@ -333,6 +333,10 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
         "http://api:8000/api"
     )
     assert "topology_bff_api_key" in services["frontend"]["secrets"]
+    assert "topology_gateway_identity_secret" in services["frontend"]["secrets"]
+    assert "topology_internal_identity_secret" in services["frontend"]["secrets"]
+    assert "topology_internal_identity_secret" in services["api"]["secrets"]
+    assert services["api"]["environment"]["END_USER_IDENTITY_MODE"] == "signed_jwt"
     assert "agent-rag-worker-health" in services["worker"]["healthcheck"]["test"]
     assert services["api"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
     assert services["worker"]["depends_on"]["neo4j"]["condition"] == "service_healthy"
@@ -343,6 +347,8 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
     assert "topology_neo4j_logs" in compose["volumes"]
     assert "TOPOLOGY_API_AUTH_KEYS" in raw
     assert "TOPOLOGY_BFF_API_KEY_FILE" in raw
+    assert "TOPOLOGY_GATEWAY_IDENTITY_SECRET_FILE" in raw
+    assert "TOPOLOGY_INTERNAL_IDENTITY_SECRET_FILE" in raw
     assert "topology-contract-reader" not in raw
     assert "topology-contract-admin" not in raw
 
@@ -360,8 +366,8 @@ def test_workflow_always_uploads_evidence_and_removes_isolated_volumes() -> None
     assert "neo4j-debug.log" in workflow
     assert "tail -n 500 /logs/debug.log" in workflow
     assert "persist-credentials: false" in workflow
-    assert "Create ephemeral topology BFF reader secret" in workflow
-    assert "Remove ephemeral topology BFF reader secret" in workflow
+    assert "Create ephemeral topology identity and BFF secrets" in workflow
+    assert "Remove ephemeral topology identity and BFF secrets" in workflow
     assert "root:10001" in workflow
     assert "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" in workflow
     assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow

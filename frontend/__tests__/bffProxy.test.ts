@@ -7,7 +7,7 @@ import { injectBffTraceContext } from "@/lib/server/traceContext";
 const encoder = new TextEncoder();
 
 function config(overrides: Partial<BffConfig> = {}): BffConfig {
-  return {
+  const defaults: BffConfig = {
     backendApiUrl: "http://api:8000/api",
     backendApiKey: "reader-key-for-contract",
     allowedOrigins: new Set(["https://quest.example.test"]),
@@ -15,8 +15,17 @@ function config(overrides: Partial<BffConfig> = {}): BffConfig {
     upstreamTimeoutMs: 2_000,
     requireOriginForUnsafeMethods: true,
     tracingMode: "propagate",
-    ...overrides,
+    identityMode: "disabled",
+    gatewayIdentitySecret: "",
+    internalIdentitySecret: "",
+    gatewayIdentityIssuer: "polyuquest-gateway",
+    gatewayIdentityAudience: "polyuquest-bff",
+    internalIdentityIssuer: "polyuquest-bff",
+    internalIdentityAudience: "polyuquest-api",
+    identityMaxTtlSeconds: 120,
+    identityClockSkewSeconds: 5,
   };
+  return { ...defaults, ...overrides };
 }
 
 function postRequest(
@@ -39,13 +48,19 @@ function postRequest(
 
 describe("BFF production configuration", () => {
   it("loads the raw reader credential from a secret file", () => {
-    const readSecret = vi.fn(() => "reader-key-from-secret-file\n");
+    const readSecret = vi.fn((path: string) => {
+      if (path.includes("gateway")) return `${"g".repeat(40)}\n`;
+      if (path.includes("internal")) return `${"i".repeat(40)}\n`;
+      return "reader-key-from-secret-file\n";
+    });
     const selected = loadBffConfig(
       {
         NODE_ENV: "production",
         BACKEND_API_URL: "http://api:8000/api",
         BFF_BACKEND_API_KEY_FILE: "/run/secrets/bff_backend_api_key",
         BFF_BACKEND_API_KEY: "environment-key-must-be-ignored",
+        BFF_GATEWAY_IDENTITY_SECRET_FILE: "/run/secrets/gateway_identity_secret",
+        BFF_INTERNAL_IDENTITY_SECRET_FILE: "/run/secrets/internal_identity_secret",
         BFF_ALLOWED_ORIGINS: "https://quest.example.test",
       },
       readSecret
@@ -65,6 +80,22 @@ describe("BFF production configuration", () => {
         BFF_ALLOWED_ORIGINS: "https://quest.example.test",
       })
     ).toThrow(/BFF_BACKEND_API_KEY_FILE/);
+  });
+
+  it("rejects identity key reuse across trust boundaries", () => {
+    expect(() =>
+      loadBffConfig(
+        {
+          NODE_ENV: "production",
+          BACKEND_API_URL: "http://api:8000/api",
+          BFF_BACKEND_API_KEY_FILE: "/run/secrets/bff_backend_api_key",
+          BFF_GATEWAY_IDENTITY_SECRET_FILE: "/run/secrets/gateway_identity_secret",
+          BFF_INTERNAL_IDENTITY_SECRET_FILE: "/run/secrets/internal_identity_secret",
+          BFF_ALLOWED_ORIGINS: "https://quest.example.test",
+        },
+        (path) => path.includes("bff_backend") ? "reader-key-from-file" : "x".repeat(40)
+      )
+    ).toThrow(/must be distinct/);
   });
 });
 

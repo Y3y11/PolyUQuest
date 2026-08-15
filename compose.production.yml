@@ -90,6 +90,8 @@ services:
       TRACE_BACKEND_MAX_SPANS: ${TRACE_BACKEND_MAX_SPANS:-500}
       API_AUTH_MODE: api_key
       API_AUTH_KEYS: ${API_AUTH_KEYS:?set hash-only API_AUTH_KEYS}
+      END_USER_IDENTITY_MODE: signed_jwt
+      END_USER_IDENTITY_SECRET_FILE: /run/secrets/internal_identity_secret
       SECURITY_AUDIT_PATH: /app/data/runtime/security_audit.sqlite3
       API_HOST: 0.0.0.0
       API_PORT: "8000"
@@ -104,6 +106,8 @@ services:
       - runtime_data:/app/data/runtime
       - cache_data:/app/data/cache
       - model_cache:/home/app/.cache
+    secrets:
+      - internal_identity_secret
     depends_on:
       - neo4j
       - qdrant
@@ -151,6 +155,9 @@ services:
     environment:
       BACKEND_API_URL: http://api:8000/api
       BFF_BACKEND_API_KEY_FILE: /run/secrets/bff_backend_api_key
+      BFF_IDENTITY_MODE: signed_jwt
+      BFF_GATEWAY_IDENTITY_SECRET_FILE: /run/secrets/gateway_identity_secret
+      BFF_INTERNAL_IDENTITY_SECRET_FILE: /run/secrets/internal_identity_secret
       BFF_ALLOWED_ORIGINS: ${BFF_ALLOWED_ORIGINS:?set the external browser origin}
       BFF_MAX_REQUEST_BYTES: ${BFF_MAX_REQUEST_BYTES:-65536}
       BFF_UPSTREAM_TIMEOUT_SECONDS: ${BFF_UPSTREAM_TIMEOUT_SECONDS:-120}
@@ -160,6 +167,8 @@ services:
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     secrets:
       - bff_backend_api_key
+      - gateway_identity_secret
+      - internal_identity_secret
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     networks:
@@ -340,3 +349,7 @@ volumes:
 secrets:
   bff_backend_api_key:
     file: ${BFF_BACKEND_API_KEY_FILE:?set the host path to the raw reader key file}
+  gateway_identity_secret:
+    file: ${BFF_GATEWAY_IDENTITY_SECRET_FILE:?set the host path to the gateway assertion key}
+  internal_identity_secret:
+    file: ${INTERNAL_IDENTITY_SECRET_FILE:?set the host path to the BFF-to-API assertion key}

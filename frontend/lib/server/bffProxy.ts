@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { getBffConfig, type BffConfig } from "./bffConfig";
+import {
+  IdentityAssertionError,
+  INTERNAL_IDENTITY_HEADER,
+  internalIdentityAssertion,
+} from "./identityContext";
 import { injectBffTraceContext } from "./traceContext";
 
 export interface BffRouteContext {
@@ -210,6 +215,17 @@ export async function proxyBffRequest(
   if (!originAllowed(request, config)) {
     return jsonError(403, "origin_forbidden", requestId);
   }
+  let identityAssertion: string | null;
+  try {
+    identityAssertion = path === "agent/runs" || path.startsWith("agent/runs/")
+      ? internalIdentityAssertion(request, config)
+      : null;
+  } catch (error) {
+    if (error instanceof IdentityAssertionError) {
+      return jsonError(401, "end_user_identity_invalid", requestId);
+    }
+    return jsonError(503, "bff_not_configured", requestId);
+  }
 
   let body: ArrayBuffer | null;
   try {
@@ -245,6 +261,7 @@ export async function proxyBffRequest(
     headers.set("Last-Event-ID", lastEventId);
   }
   if (config.backendApiKey) headers.set("X-API-Key", config.backendApiKey);
+  if (identityAssertion) headers.set(INTERNAL_IDENTITY_HEADER, identityAssertion);
   if (config.tracingMode !== "disabled") {
     (dependencies.injectTraceContext ?? injectBffTraceContext)(headers);
   }

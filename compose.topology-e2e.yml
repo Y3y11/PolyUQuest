@@ -72,6 +72,8 @@ services:
       OTEL_SERVICE_NAME: polyuquest-api
       API_AUTH_MODE: api_key
       API_AUTH_KEYS: ${TOPOLOGY_API_AUTH_KEYS:?set hash-only TOPOLOGY_API_AUTH_KEYS}
+      END_USER_IDENTITY_MODE: signed_jwt
+      END_USER_IDENTITY_SECRET_FILE: /run/secrets/topology_internal_identity_secret
       API_HOST: 0.0.0.0
       API_PORT: "8000"
       API_RELOAD: "false"
@@ -84,6 +86,8 @@ services:
     volumes:
       - topology_runtime:/app/data/runtime
       - topology_cache:/app/data/cache
+    secrets:
+      - topology_internal_identity_secret
     depends_on:
       neo4j:
         condition: service_healthy
@@ -163,11 +167,16 @@ services:
     environment:
       BACKEND_API_URL: http://api:8000/api
       BFF_BACKEND_API_KEY_FILE: /run/secrets/topology_bff_api_key
+      BFF_IDENTITY_MODE: signed_jwt
+      BFF_GATEWAY_IDENTITY_SECRET_FILE: /run/secrets/topology_gateway_identity_secret
+      BFF_INTERNAL_IDENTITY_SECRET_FILE: /run/secrets/topology_internal_identity_secret
       BFF_ALLOWED_ORIGINS: ${TOPOLOGY_BROWSER_ORIGIN:-http://127.0.0.1:13000}
       BFF_MAX_REQUEST_BYTES: "65536"
       BFF_UPSTREAM_TIMEOUT_SECONDS: "120"
     secrets:
       - topology_bff_api_key
+      - topology_gateway_identity_secret
+      - topology_internal_identity_secret
     ports:
       - "127.0.0.1:${TOPOLOGY_FRONTEND_PORT:-13000}:3000"
     networks:
@@ -246,3 +255,7 @@ volumes:
 secrets:
   topology_bff_api_key:
     file: ${TOPOLOGY_BFF_API_KEY_FILE:?set TOPOLOGY_BFF_API_KEY_FILE}
+  topology_gateway_identity_secret:
+    file: ${TOPOLOGY_GATEWAY_IDENTITY_SECRET_FILE:?set TOPOLOGY_GATEWAY_IDENTITY_SECRET_FILE}
+  topology_internal_identity_secret:
+    file: ${TOPOLOGY_INTERNAL_IDENTITY_SECRET_FILE:?set TOPOLOGY_INTERNAL_IDENTITY_SECRET_FILE}

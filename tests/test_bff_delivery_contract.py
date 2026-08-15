@@ -18,7 +18,15 @@ def test_production_frontend_uses_private_bff_network_and_secret_file() -> None:
         == "/run/secrets/bff_backend_api_key"
     )
     assert "BFF_BACKEND_API_KEY" not in frontend["environment"]
-    assert frontend["secrets"] == ["bff_backend_api_key"]
+    assert set(frontend["secrets"]) == {
+        "bff_backend_api_key",
+        "gateway_identity_secret",
+        "internal_identity_secret",
+    }
+    assert frontend["environment"]["BFF_IDENTITY_MODE"] == "signed_jwt"
+    assert compose["services"]["api"]["environment"]["END_USER_IDENTITY_MODE"] == (
+        "signed_jwt"
+    )
     assert "BFF_BACKEND_API_KEY_FILE" in compose["secrets"]["bff_backend_api_key"]["file"]
 
 
@@ -41,12 +49,17 @@ def test_bff_e2e_compose_is_isolated_and_uses_docker_secret() -> None:
     assert set(frontend["networks"]) == {"bff_frontend", "bff_backend"}
     assert frontend["read_only"] is True
     assert "ALL" in frontend["cap_drop"]
-    assert frontend["secrets"] == ["bff_backend_api_key"]
+    assert set(frontend["secrets"]) == {
+        "bff_backend_api_key",
+        "gateway_identity_secret",
+        "internal_identity_secret",
+    }
     assert frontend["environment"]["BACKEND_API_URL"] == "http://upstream:18081/api"
     assert "BFF_BACKEND_API_KEY" not in frontend["environment"]
     assert upstream["read_only"] is True
     assert set(upstream["networks"]) == {"bff_backend", "bff_control"}
     assert "BFF_E2E_EXPECTED_KEY_SHA256" in upstream["environment"]
+    assert upstream["secrets"] == ["internal_identity_secret"]
 
 
 def test_bff_workflow_runs_build_scenario_artifacts_and_cleanup() -> None:
@@ -58,6 +71,8 @@ def test_bff_workflow_runs_build_scenario_artifacts_and_cleanup() -> None:
     assert "npm exec tsc -- --noEmit --incremental false" in workflow
     assert "npm run build" in workflow
     assert "BFF_E2E_SECRET_MARKER: bff-e2e-secret-" in workflow
+    assert "BFF_E2E_GATEWAY_IDENTITY_SECRET_FILE" in workflow
+    assert "BFF_E2E_INTERNAL_IDENTITY_SECRET_FILE" in workflow
     assert "openssl rand -hex 24" in workflow
     assert "printf '%s' \"$secret_value\" | sha256sum" in workflow
     assert 'sha256sum "$secret_file"' not in workflow
