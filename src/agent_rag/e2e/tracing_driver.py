@@ -29,7 +29,12 @@ _CANARIES = (
 )
 
 
-async def _wait_ready(url: str, *, timeout_seconds: float) -> None:
+async def _wait_ready(
+    url: str,
+    *,
+    dependency: str,
+    timeout_seconds: float,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     delay = 0.1
     async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
@@ -42,7 +47,7 @@ async def _wait_ready(url: str, *, timeout_seconds: float) -> None:
                 pass
             await asyncio.sleep(delay)
             delay = min(1.0, delay * 1.5)
-    raise TimeoutError("Tracing dependency did not become ready")
+    raise TimeoutError(f"{dependency} did not become ready")
 
 
 def _emit_canary(otlp_endpoint: str) -> str:
@@ -111,8 +116,16 @@ async def run_gate(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     await asyncio.gather(
-        _wait_ready(f"{tempo_url.rstrip('/')}/ready", timeout_seconds=timeout_seconds),
-        _wait_ready(collector_health_url, timeout_seconds=timeout_seconds),
+        _wait_ready(
+            f"{tempo_url.rstrip('/')}/ready",
+            dependency="Tempo",
+            timeout_seconds=timeout_seconds,
+        ),
+        _wait_ready(
+            collector_health_url,
+            dependency="Collector",
+            timeout_seconds=timeout_seconds,
+        ),
     )
     trace_id = await asyncio.to_thread(_emit_canary, otlp_endpoint)
     deadline = time.monotonic() + timeout_seconds

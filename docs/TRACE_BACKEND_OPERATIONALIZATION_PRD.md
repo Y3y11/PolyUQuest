@@ -198,7 +198,7 @@ Backend URL 只允许 http/https origin，不允许 credentials、query、fragme
 5. disabled、404、timeout、connect、5xx、oversize、invalid JSON 映射正确；
 6. reader 403，operator/admin 200；
 7. BFF allowlist 不包含 trace operator 路由；
-8. Compose profile 默认不启动，启用后 Collector/Tempo 只在 backend；
+8. 生产 Compose profile 默认不启动，启用后 Collector/Tempo 只在 internal backend 且不发布端口；隔离 E2E 仅向 runner 的 `127.0.0.1` 发布测试端口；
 9. Collector 配置验证通过，真实 OTLP trace 可由 Tempo 按 ID查询；
 10. canary query、URL、secret attribute、status message 不出现在 Tempo 查询和安全 view；
 11. 问答 API 在 Collector/Tempo 停止时仍可创建/执行 Run；

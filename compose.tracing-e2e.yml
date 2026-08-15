@@ -39,8 +39,9 @@ services:
     depends_on: [tempo]
 
 networks:
+  # The runner must reach the loopback-only test ports. Production keeps the
+  # corresponding backend network internal and publishes no observability ports.
   tracing:
-    internal: true
 
 volumes:
   tracing_tempo_data:
