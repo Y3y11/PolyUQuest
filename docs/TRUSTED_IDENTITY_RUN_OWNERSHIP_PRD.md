@@ -242,8 +242,13 @@ BFF：`BFF_IDENTITY_MODE`、gateway/internal secret file、两组 issuer/audienc
 | Deployment / supply-chain policy | passed |
 | YAML / Node E2E 脚本语法 | passed |
 | Production / BFF / Topology Compose 展开 | passed（受控占位 secret） |
+| Business E2E Gate | run `31864403792`，success |
+| Distributed Tracing Gate | run `31864403813`，success |
+| Production Topology E2E | run `31864403894`，success |
+| Container Supply Chain Gate | run `31864403793`，success |
+| Browser BFF SSE Gate | 修复前 run `31864403820` 定位 UID/secret 权限偏差；修复后 run `31864736396`，success |
 
-clean Linux image build、真实 BFF 身份重签和 API/Worker 同启由本次提交触发的 GitHub Browser BFF 与 Production Topology 门禁补充最终证据。
+远端 clean Linux 环境已验证 production image build、真实 BFF 身份重签、API/Worker 同启、SSE 与容器 secret 权限合同。修复保持 `root:10001 + 0440`，未通过扩大 secret 读权限规避问题。
 
 ## 11. 配置、部署与运维
 
