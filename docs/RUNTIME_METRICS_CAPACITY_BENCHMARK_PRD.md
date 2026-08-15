@@ -214,7 +214,23 @@ Capacity CLI
 - 本机控制面 P50/P95/P99 为 77.466/279.448/439.885 ms，吞吐 64.146 ops/s；该结果不代表
   LLM/网页/图向量端到端容量。
 
-GitHub Linux workflow 和 artifact 信息在推送后回填，不用本地结果替代远程证据。
+### 10.5 GitHub Linux 门禁证据（commit `baf7f72`）
+
+- Production Topology E2E Gate：run `31859834468`，success；新增合同测试、Ruff、正式
+  capacity CLI、部署/供应链策略与完整 topology scenario 全部通过；
+- Linux capacity：P50/P95/P99 `7.940/81.311/108.069 ms`，`220.947 ops/s`；burst
+  `8 accepted / 24 rejected_waiting`，active probe `32 rejected_active`，release `12`，recovery
+  `8 accepted`，persisted accepted total `20`；
+- topology driver：14 checks，`126162 ms`，status passed；
+- artifact ID `9240215332`，名称
+  `production-topology-e2e-baf7f72c693b0f00028f1db3f98a81f8ab2afe74`，19517 bytes，
+  digest `sha256:54421c4f312b89b34cef75acf547f2b2f88dbde24946b675b89804d255212097`，
+  保留至 2026-08-29；
+- Business E2E Gate `31859834510`、Browser BFF SSE Gate `31859834456`、Container Supply
+  Chain Gate `31859834497` 均为 success。
+
+因此本轮同时具备本地全量回归、Linux 控制面容量和真实生产拓扑恢复三类证据；容量数字仍只用于
+控制面回归，不外推为真实问答吞吐。
 
 ## 11. 配置、部署与运维
 
