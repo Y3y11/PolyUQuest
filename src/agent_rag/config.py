@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     agent_run_budget_max_iterations: int = 5
     agent_run_budget_max_pages: int = 10
     agent_run_budget_max_seconds: int = 120
+    runtime_metrics_enabled: bool = True
+    runtime_metrics_cache_ttl_seconds: float = 5.0
+    runtime_metrics_telemetry_window_hours: int = 24
+    runtime_metrics_worker_limit: int = 100
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -251,6 +255,16 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"{name} must be positive and no greater than {public_limit}"
                 )
+        if not 1 <= self.runtime_metrics_cache_ttl_seconds <= 60:
+            raise ValueError(
+                "RUNTIME_METRICS_CACHE_TTL_SECONDS must be between 1 and 60"
+            )
+        if not 1 <= self.runtime_metrics_telemetry_window_hours <= 2160:
+            raise ValueError(
+                "RUNTIME_METRICS_TELEMETRY_WINDOW_HOURS must be between 1 and 2160"
+            )
+        if not 1 <= self.runtime_metrics_worker_limit <= 500:
+            raise ValueError("RUNTIME_METRICS_WORKER_LIMIT must be between 1 and 500")
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:

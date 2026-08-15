@@ -49,6 +49,27 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 
 验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready` 且 capabilities 包含 `agent-run`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF 先创建 durable Run，再通过带事件 ID 的 SSE 逐步返回并关联 BFF/API request IDs；刷新页面后应恢复同一 run_id，而不是重新执行。以受控小上限执行并发冒烟，确认超限返回 429/Retry-After、完成后恢复接收、同 key 重提仍返回原 run。最后用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。详见 `docs/DURABLE_AGENT_RUN_RUNBOOK.md`。
 
+### 4.1 Prometheus 抓取与容量基准
+
+`GET /api/metrics` 需要 operator/admin key，不应经过面向浏览器的 reader BFF。Prometheus 应位于
+受控内网，通过 Secret 注入 `X-API-Key`，建议 15 秒抓取一次；响应只包含固定标签的队列、准入、
+Worker 和 telemetry 聚合，不包含问题、网页、Run ID 或 Worker instance ID。出现 scrape error 时先
+检查 `polyuquest_metrics_snapshot_refresh_total{outcome="error"}` 与 snapshot age，不要通过提高抓取
+频率掩盖 SQLite 或磁盘故障。
+
+发布前可运行不产生外部 API 费用的控制面基准：
+
+```powershell
+agent-rag-capacity-benchmark `
+  --requests 32 --concurrency 16 `
+  --max-active 12 --max-waiting 8 `
+  --max-p95-ms 750 `
+  --output data/runtime/capacity-benchmark.json
+```
+
+只有报告 `status=passed`、所有 assertions 为 true 才能作为控制面门禁通过。该数值不能替代真实
+LLM、抓取、Neo4j、Qdrant 与完整 Worker 拓扑的容量测试。
+
 ## 5. 常规升级
 
 1. 运行后端、前端测试与离线评测发布门禁。
@@ -99,6 +120,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - schema 或写入不兼容：停止服务，确认当前数据是否需要额外留档，再恢复升级前备份。
 - Worker 卡住：先查看 Agent Run、Index Job 当前租约与 outbox；`docker compose stop worker` 会等待 75 秒。超时取消后，Agent Run 由 lease 重新执行，知识发布由幂等 patch/outbox 和下一次启动恢复。
 - 大量 429：先区分正常削峰与 Worker 故障；查看 admission counters、capacity utilization、queue age 和 Worker heartbeat。禁止让客户端无 jitter 高频重试。
+- `/api/metrics` 返回 503：确认 runtime SQLite 可读、磁盘空间和权限正常；若已有旧快照，系统会短时返回旧数据并通过 snapshot age/error counter 告警，业务查询不应受影响。
 - API live 正常但 ready 失败：检查 embedding warm-up、Neo4j/Qdrant 连通性和模型凭证，禁止仅靠重启掩盖持续错误。
 - 磁盘不足：先停止写入，扩容或迁移卷；不要手工删除 Neo4j/Qdrant 文件。
 

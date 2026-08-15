@@ -117,6 +117,15 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
             errors.append(f"api must declare shared Agent Run policy {name}")
         elif api_environment.get(name) != worker_environment.get(name):
             errors.append(f"api and worker must share Agent Run policy {name}")
+    metrics_settings = (
+        "RUNTIME_METRICS_ENABLED",
+        "RUNTIME_METRICS_CACHE_TTL_SECONDS",
+        "RUNTIME_METRICS_TELEMETRY_WINDOW_HOURS",
+        "RUNTIME_METRICS_WORKER_LIMIT",
+    )
+    for name in metrics_settings:
+        if name not in api_environment:
+            errors.append(f"api must declare runtime metrics policy {name}")
 
     frontend_environment = frontend.get("environment", {})
     if frontend_environment.get("BACKEND_API_URL") != "http://api:8000/api":

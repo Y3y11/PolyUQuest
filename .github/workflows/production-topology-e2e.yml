@@ -27,10 +27,13 @@ on:
       - "src/agent_rag/versioning/**"
       - "src/agent_rag/workers/**"
       - "src/agent_rag/config.py"
+      - "src/agent_rag/capacity_cli.py"
       - "src/agent_rag/limits.py"
       - "src/agent_rag/runtime.py"
       - "tests/test_agent_run_admission.py"
       - "tests/test_agent_run_api.py"
+      - "tests/test_capacity_benchmark.py"
+      - "tests/test_runtime_metrics.py"
       - "tests/test_topology_e2e_contract.py"
       - "tests/test_worker_status.py"
       - "frontend/Dockerfile"
@@ -61,10 +64,13 @@ on:
       - "src/agent_rag/versioning/**"
       - "src/agent_rag/workers/**"
       - "src/agent_rag/config.py"
+      - "src/agent_rag/capacity_cli.py"
       - "src/agent_rag/limits.py"
       - "src/agent_rag/runtime.py"
       - "tests/test_agent_run_admission.py"
       - "tests/test_agent_run_api.py"
+      - "tests/test_capacity_benchmark.py"
+      - "tests/test_runtime_metrics.py"
       - "tests/test_topology_e2e_contract.py"
       - "tests/test_worker_status.py"
       - "frontend/Dockerfile"
@@ -130,7 +136,9 @@ jobs:
           tests/test_topology_e2e_contract.py
           tests/test_worker_status.py
           tests/test_agent_run_admission.py
-          tests/test_agent_run_api.py -q
+          tests/test_agent_run_api.py
+          tests/test_capacity_benchmark.py
+          tests/test_runtime_metrics.py -q
 
       - name: Lint topology implementation
         run: >-
@@ -143,13 +151,29 @@ jobs:
           src/agent_rag/agent/schemas.py
           src/agent_rag/runs/admission.py
           src/agent_rag/runs/store.py
+          src/agent_rag/runs/benchmark.py
+          src/agent_rag/capacity_cli.py
+          src/agent_rag/metrics/runtime.py
           src/agent_rag/api/routes/agent_router.py
+          src/agent_rag/api/routes/metrics_router.py
           src/agent_rag/workers/status.py
           src/agent_rag/api/routes/worker_router.py
           tests/test_topology_e2e_contract.py
           tests/test_worker_status.py
           tests/test_agent_run_admission.py
           tests/test_agent_run_api.py
+          tests/test_capacity_benchmark.py
+          tests/test_runtime_metrics.py
+
+      - name: Benchmark atomic admission capacity
+        run: >-
+          uv run --no-sync agent-rag-capacity-benchmark
+          --requests 32
+          --concurrency 16
+          --max-active 12
+          --max-waiting 8
+          --max-p95-ms 750
+          --output data/runtime/topology-e2e/capacity-benchmark.json
 
       - name: Validate deployment and supply-chain policy
         run: |
@@ -202,6 +226,7 @@ jobs:
           name: production-topology-e2e-${{ github.sha }}
           path: |
             data/runtime/topology-e2e/report.json
+            data/runtime/topology-e2e/capacity-benchmark.json
             data/runtime/topology-e2e/compose.log
             data/runtime/topology-e2e/neo4j-health.json
             data/runtime/topology-e2e/neo4j-debug.log

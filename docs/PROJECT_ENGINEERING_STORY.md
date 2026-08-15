@@ -213,6 +213,31 @@ run_id 路径，并只转发校验后的 Idempotency-Key/Last-Event-ID。实现�
 解决的问题：代理重启、网络切换、页面刷新和前端发布不再直接丢失已经发生费用的在线探索；
 任务状态、事件、取消和最终结果有稳定 run_id，可恢复执行与可审计交付首次形成闭环。
 
+### 迭代 20：Durable Run 故障注入与生产恢复门禁
+
+把真实 Next.js BFF、FastAPI、共享 Run Store 与独立 Worker 放入 Linux 容器拓扑：浏览器断开 SSE
+后 Run 继续执行；Worker 在 claim 后被 SIGKILL，lease 到期由新实例接管；客户端携带游标重放时只
+得到缺失事件，幂等重提仍指向原 Run。health/stats 同时暴露 Worker capability、队列年龄、应用重试
+和 lease reclaim，使“可恢复”从实现假设变成可重复的发布证据。
+
+### 迭代 21：Agent Runtime 原子准入与部署预算
+
+在 SQLite `BEGIN IMMEDIATE` 内完成幂等检查、预算校验、active/waiting 容量判断、计数器更新和 Run
+写入，避免并发请求先通过检查再共同超收。过载返回 429 与安全的 `Retry-After`，超部署预算返回
+结构化 422；BFF 和浏览器保留状态语义但不泄露上游细节。健康接口按容量利用率输出 warning/critical，
+20 路并发、上限 3 的验证得到精确 3 accepted / 17 rejected。
+
+### 迭代 22：Prometheus 运行指标与确定性容量基准
+
+将 Run、admission、queue age、attempt reason、Worker capability 和 telemetry 分位数转换为 operator
+受保护的低基数 Prometheus 指标。快照采用单飞 TTL 缓存和 stale-on-error，标签只允许固定枚举，
+禁止问题、URL、run_id、principal 和 worker instance 进入时序。attempt reason 从 scrape 时扫描历史
+事件改为 claim 事务内写时计数，监控开销不再随事件账本线性增长。
+
+同时增加独立容量基准 CLI，以临时 SQLite 执行 burst → waiting rejection → 填满 active → active
+rejection → release → recovery，输出 P50/P95/P99、吞吐、持久化 counters 和合同断言。该报告明确只
+衡量准入控制面，不把外部模型、网页和图向量依赖包装成端到端容量结论。
+
 ## 5. 当前总体架构
 
 ```text
@@ -270,6 +295,12 @@ Telemetry + Evaluation
   -> governed Manifest + frozen JSONL scenarios
   -> semantic/behavior/smoke scoring + business slices
   -> deterministic baseline/candidate release gate + CI artifacts
+
+Runtime Metrics + Capacity Gate
+  -> operator-only /api/metrics
+  -> single-flight TTL snapshot + stale-on-error
+  -> fixed-label Prometheus exposition (no business content)
+  -> deterministic SQLite admission benchmark + JSON artifact
 ```
 
 ## 6. 技术选型理由
@@ -310,7 +341,7 @@ Telemetry + Evaluation
 
 - PageVersion 回滚、Reconciliation 审批与 Diff 可视化；
 - PostgreSQL durable queue/Outbox、Redis Streams 和多副本分布式执行；
-- 将现有稳定 telemetry contract 导出到 OpenTelemetry/Prometheus 与运营面板；
+- 将现有 Prometheus contract 接入 dashboard/alert rules，并用 OpenTelemetry 贯通跨进程 trace context；
 - OIDC/JWT、企业 SSO、Key 托管轮换、租户/Domain Scope 与端到端数据隔离；
 - 事实冲突裁决、来源优先级与时态查询；
 - Human-in-the-loop 审批、租户隔离和敏感实体治理。
@@ -337,6 +368,7 @@ Telemetry + Evaluation
 - `docs/DURABLE_AGENT_RUN_PRD.md`：持久化 Run、Worker lease、事件重放与显式取消；
 - `docs/DURABLE_AGENT_RUN_CHAOS_E2E_PRD.md`：真实 BFF 到 Worker 的故障注入、lease 接管与运行健康；
 - `docs/AGENT_RUNTIME_ADMISSION_CONTROL_PRD.md`：原子准入、部署预算、429 过载合同与容量指标；
+- `docs/RUNTIME_METRICS_CAPACITY_BENCHMARK_PRD.md`：低基数 Prometheus 指标、快照缓存与容量基准；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

@@ -17,6 +17,7 @@ from agent_rag.api.routes import (
     graph_router,
     health_router,
     indexing_router,
+    metrics_router,
     query_router,
     security_router,
     telemetry_router,
@@ -128,6 +129,7 @@ app.include_router(freshness_router.router, prefix="/api", tags=["freshness"])
 app.include_router(telemetry_router.router, prefix="/api", tags=["telemetry"])
 app.include_router(security_router.router, prefix="/api", tags=["security"])
 app.include_router(worker_router.router, prefix="/api", tags=["workers"])
+app.include_router(metrics_router.router, prefix="/api", tags=["metrics"])
 
 
 def start():

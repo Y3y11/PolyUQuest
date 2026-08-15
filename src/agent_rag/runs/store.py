@@ -107,6 +107,7 @@ class AgentRunStore:
                 return
             connection = sqlite3.connect(self.path, timeout=5.0)
             try:
+                connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=NORMAL")
                 connection.execute("PRAGMA foreign_keys=ON")
@@ -155,12 +156,62 @@ class AgentRunStore:
                         value INTEGER NOT NULL DEFAULT 0,
                         updated_at TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS agent_run_attempt_counters (
+                        metric TEXT PRIMARY KEY,
+                        value INTEGER NOT NULL DEFAULT 0,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS agent_run_schema_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
                     """
                 )
+                connection.execute("BEGIN IMMEDIATE")
+                self._backfill_attempt_counters(connection)
                 connection.commit()
             finally:
                 connection.close()
             self._initialized = True
+
+    @staticmethod
+    def _backfill_attempt_counters(connection: sqlite3.Connection) -> None:
+        marker = connection.execute(
+            "SELECT value FROM agent_run_schema_metadata WHERE key=?",
+            ("attempt_counters_v1",),
+        ).fetchone()
+        if marker is not None:
+            return
+        counters = {"attempts": 0, "application_retry": 0, "lease_reclaim": 0}
+        rows = connection.execute(
+            """SELECT payload_json FROM agent_run_events
+            WHERE event_type='run_attempt_started'"""
+        ).fetchall()
+        for row in rows:
+            try:
+                reason = json.loads(row["payload_json"]).get("claim_reason")
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                continue
+            counters["attempts"] += 1
+            if reason in {"application_retry", "lease_reclaim"}:
+                counters[reason] += 1
+        now = _iso()
+        connection.executemany(
+            """INSERT INTO agent_run_attempt_counters(metric, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(metric) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at""",
+            [(metric, value, now) for metric, value in counters.items()],
+        )
+        connection.execute(
+            """INSERT INTO agent_run_schema_metadata(key, value, updated_at)
+            VALUES ('attempt_counters_v1', 'complete', ?)""",
+            (now,),
+        )
 
     @staticmethod
     def validate_idempotency_key(value: str) -> str:
@@ -207,6 +258,22 @@ class AgentRunStore:
     ) -> None:
         connection.execute(
             """INSERT INTO agent_run_admission_counters(metric, value, updated_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(metric) DO UPDATE SET
+                value=value+1,
+                updated_at=excluded.updated_at""",
+            (metric, created_at),
+        )
+
+    @staticmethod
+    def _increment_attempt_counter_tx(
+        connection: sqlite3.Connection,
+        metric: str,
+        *,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO agent_run_attempt_counters(metric, value, updated_at)
             VALUES (?, 1, ?)
             ON CONFLICT(metric) DO UPDATE SET
                 value=value+1,
@@ -460,6 +527,17 @@ class AgentRunStore:
                 },
                 created_at=now_iso,
             )
+            self._increment_attempt_counter_tx(
+                connection,
+                "attempts",
+                created_at=now_iso,
+            )
+            if claim_reason in {"application_retry", "lease_reclaim"}:
+                self._increment_attempt_counter_tx(
+                    connection,
+                    claim_reason,
+                    created_at=now_iso,
+                )
             claimed = connection.execute(
                 "SELECT * FROM agent_runs WHERE run_id=?", (row["run_id"],)
             ).fetchone()
@@ -721,9 +799,8 @@ class AgentRunStore:
                     AS retried_runs
                 FROM agent_runs"""
             ).fetchone()
-            attempt_events = connection.execute(
-                """SELECT payload_json FROM agent_run_events
-                WHERE event_type='run_attempt_started'"""
+            attempt_rows = connection.execute(
+                "SELECT metric, value FROM agent_run_attempt_counters"
             ).fetchall()
             admission_rows = connection.execute(
                 "SELECT metric, value FROM agent_run_admission_counters"
@@ -763,19 +840,21 @@ class AgentRunStore:
         )
         result["attempts_total"] = int(aggregates["attempts_total"] or 0)
         result["retried_runs"] = int(aggregates["retried_runs"] or 0)
-        claim_reasons = {"application_retries": 0, "lease_reclaims": 0}
-        for event in attempt_events:
-            try:
-                reason = json.loads(event["payload_json"]).get("claim_reason")
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            metric = {
-                "application_retry": "application_retries",
-                "lease_reclaim": "lease_reclaims",
-            }.get(reason)
-            if metric is not None:
-                claim_reasons[metric] += 1
-        result.update(claim_reasons)
+        attempt_counters = {
+            "attempt_events_total": 0,
+            "application_retries": 0,
+            "lease_reclaims": 0,
+        }
+        attempt_names = {
+            "attempts": "attempt_events_total",
+            "application_retry": "application_retries",
+            "lease_reclaim": "lease_reclaims",
+        }
+        for row in attempt_rows:
+            selected = attempt_names.get(str(row["metric"]))
+            if selected is not None:
+                attempt_counters[selected] = int(row["value"])
+        result.update(attempt_counters)
         admission_counters = {
             "admission_accepted_total": 0,
             "admission_idempotent_replays_total": 0,

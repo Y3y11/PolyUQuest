@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.1",
     "firecrawl-py>=1.15",
     "rank-bm25>=0.2.2",
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,7 @@ agent-rag-business-e2e = "agent_rag.e2e.cli:main"
 agent-rag-e2e-fixture = "agent_rag.e2e.fixture_app:start"
 agent-rag-topology-e2e = "agent_rag.e2e.topology_driver:main"
 agent-rag-worker-health = "agent_rag.workers.status:health_main"
+agent-rag-capacity-benchmark = "agent_rag.capacity_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_rag"]
