@@ -30,6 +30,9 @@ dependencies = [
     "firecrawl-py>=1.15",
     "rank-bm25>=0.2.2",
     "prometheus-client>=0.21",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
 ]
 
 [project.optional-dependencies]

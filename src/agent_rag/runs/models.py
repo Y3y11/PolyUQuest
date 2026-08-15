@@ -28,6 +28,7 @@ class AgentRunRecord(BaseModel):
     idempotency_key: str
     request_fingerprint: str
     request_json: str
+    traceparent: str = ""
     result_json: str | None = None
     status: AgentRunStatus = "queued"
     attempts: int = 0
@@ -56,6 +57,12 @@ class AgentRunRecord(BaseModel):
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_AGENT_RUN_STATUSES
+
+    @property
+    def trace_id(self) -> str | None:
+        from agent_rag.tracing.runtime import trace_id_from_traceparent
+
+        return trace_id_from_traceparent(self.traceparent)
 
 
 class AgentRunEvent(BaseModel):

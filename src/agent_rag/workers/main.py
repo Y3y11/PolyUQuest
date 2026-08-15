@@ -133,7 +133,12 @@ async def run_worker(stop_event: asyncio.Event | None = None) -> None:
 
 
 def start() -> None:
-    asyncio.run(run_worker())
+    from agent_rag.tracing import trace_runtime
+
+    try:
+        asyncio.run(run_worker())
+    finally:
+        trace_runtime.shutdown()
 
 
 if __name__ == "__main__":

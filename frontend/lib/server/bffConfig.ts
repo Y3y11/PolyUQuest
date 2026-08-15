@@ -7,6 +7,7 @@ export interface BffConfig {
   maxRequestBytes: number;
   upstreamTimeoutMs: number;
   requireOriginForUnsafeMethods: boolean;
+  tracingMode: "disabled" | "propagate" | "otlp";
 }
 
 type SecretReader = (path: string) => string;
@@ -71,6 +72,10 @@ export function loadBffConfig(
   readSecretFile: SecretReader = (path) => readFileSync(path, "utf8")
 ): BffConfig {
   const production = env.NODE_ENV === "production";
+  const tracingMode = env.OTEL_TRACING_MODE || "propagate";
+  if (!['disabled', 'propagate', 'otlp'].includes(tracingMode)) {
+    throw new Error("OTEL_TRACING_MODE must be disabled, propagate, or otlp");
+  }
   const backendApiUrl = parseBackendUrl(
     env.BACKEND_API_URL || (production ? "" : "http://127.0.0.1:8000/api")
   );
@@ -108,6 +113,7 @@ export function loadBffConfig(
         600
       ) * 1_000,
     requireOriginForUnsafeMethods: production,
+    tracingMode: tracingMode as BffConfig["tracingMode"],
   };
 }
 

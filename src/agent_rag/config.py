@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     runtime_metrics_cache_ttl_seconds: float = 5.0
     runtime_metrics_telemetry_window_hours: int = 24
     runtime_metrics_worker_limit: int = 100
+    otel_tracing_mode: Literal["disabled", "propagate", "otlp"] = "propagate"
+    otel_service_name: str = "polyuquest-api"
+    otel_traces_sampler_arg: float = 0.1
+    otel_exporter_otlp_endpoint: str = ""
+    otel_exporter_otlp_headers: str = ""
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -265,6 +270,14 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.runtime_metrics_worker_limit <= 500:
             raise ValueError("RUNTIME_METRICS_WORKER_LIMIT must be between 1 and 500")
+        if not 0 <= self.otel_traces_sampler_arg <= 1:
+            raise ValueError("OTEL_TRACES_SAMPLER_ARG must be between 0 and 1")
+        if not re.fullmatch(r"[a-zA-Z0-9._-]{1,63}", self.otel_service_name):
+            raise ValueError("OTEL_SERVICE_NAME has an invalid format")
+        if self.otel_tracing_mode == "otlp" and not self.otel_exporter_otlp_endpoint:
+            raise ValueError(
+                "OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_TRACING_MODE=otlp"
+            )
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:

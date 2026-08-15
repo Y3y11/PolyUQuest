@@ -118,6 +118,7 @@ class AgentRunStore:
                         idempotency_key TEXT NOT NULL UNIQUE,
                         request_fingerprint TEXT NOT NULL,
                         request_json TEXT NOT NULL,
+                        traceparent TEXT NOT NULL DEFAULT '',
                         result_json TEXT,
                         status TEXT NOT NULL,
                         attempts INTEGER NOT NULL DEFAULT 0,
@@ -170,6 +171,13 @@ class AgentRunStore:
                     );
                     """
                 )
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")
+                }
+                if "traceparent" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN traceparent TEXT NOT NULL DEFAULT ''"
+                    )
                 connection.execute("BEGIN IMMEDIATE")
                 self._backfill_attempt_counters(connection)
                 connection.commit()
@@ -300,7 +308,10 @@ class AgentRunStore:
         *,
         max_attempts: int | None = None,
         admission_policy: AgentRunAdmissionPolicy | None = None,
+        traceparent: str = "",
     ) -> tuple[AgentRunRecord, bool]:
+        from agent_rag.tracing.runtime import validate_traceparent
+
         key = self.validate_idempotency_key(idempotency_key)
         request_json, fingerprint = _request_payload(request)
         policy = (
@@ -314,6 +325,7 @@ class AgentRunStore:
             idempotency_key=key,
             request_fingerprint=fingerprint,
             request_json=request_json,
+            traceparent=validate_traceparent(traceparent),
             max_attempts=max_attempts or settings.agent_run_max_attempts,
             available_at=now,
             created_at=now,
@@ -376,16 +388,17 @@ class AgentRunStore:
                     connection.execute(
                         """INSERT INTO agent_runs(
                             run_id, idempotency_key, request_fingerprint,
-                            request_json, result_json, status, attempts,
+                            request_json, traceparent, result_json, status, attempts,
                             max_attempts, available_at, lease_until, worker_id,
                             cancel_requested_at, last_error_code, last_error,
                             created_at, updated_at, started_at, completed_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             run.run_id,
                             run.idempotency_key,
                             run.request_fingerprint,
                             run.request_json,
+                            run.traceparent,
                             run.result_json,
                             run.status,
                             run.attempts,

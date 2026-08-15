@@ -242,6 +242,14 @@ query hash, bounded counters, allowlisted identifiers, status, latency, and
 logical versus billable LLM usage. Telemetry writes are fail-open so an
 observability outage cannot break the answer path.
 
+OpenTelemetry adds cross-process correlation for the durable path. The BFF injects
+W3C `traceparent`; the API persists it with the Agent Run, and the Agent and Index
+workers resume consumer spans after queueing or restart. `OTEL_TRACING_MODE` supports
+`disabled`, local-only `propagate`, and explicit `otlp` export. Custom spans use a
+fixed attribute allowlist and never include questions, answers, prompts, page URLs,
+HTML, credentials, dynamic Run/Job IDs, or exception text. See
+[`docs/DISTRIBUTED_TRACING_PRD.md`](docs/DISTRIBUTED_TRACING_PRD.md).
+
 For repeatable release checks, freeze business scenarios as JSONL, bind them to
 a versioned manifest, and validate the dataset before scoring. The checked-in
 sample manifest is intentionally `draft`; it demonstrates the contract but is

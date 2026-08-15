@@ -29,6 +29,8 @@ x-runtime-environment: &runtime-environment
   RUNTIME_METRICS_CACHE_TTL_SECONDS: "5"
   RUNTIME_METRICS_TELEMETRY_WINDOW_HOURS: "24"
   RUNTIME_METRICS_WORKER_LIMIT: "100"
+  OTEL_TRACING_MODE: propagate
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
   SECURITY_AUDIT_PATH: /app/data/runtime/security.sqlite3
   BUSINESS_E2E_MODE: topology
   BUSINESS_E2E_TOKEN: ${TOPOLOGY_E2E_TOKEN:?set TOPOLOGY_E2E_TOKEN}
@@ -67,6 +69,7 @@ services:
     environment:
       <<: *runtime-environment
       APP_PROCESS_ROLE: api
+      OTEL_SERVICE_NAME: polyuquest-api
       API_AUTH_MODE: api_key
       API_AUTH_KEYS: ${TOPOLOGY_API_AUTH_KEYS:?set hash-only TOPOLOGY_API_AUTH_KEYS}
       API_HOST: 0.0.0.0
@@ -107,6 +110,7 @@ services:
     environment:
       <<: *runtime-environment
       APP_PROCESS_ROLE: worker
+      OTEL_SERVICE_NAME: polyuquest-worker
       API_AUTH_MODE: disabled
       AGENT_REPAIR_ON_STARTUP: "true"
       AGENT_RUN_WORKER_ENABLED: "true"

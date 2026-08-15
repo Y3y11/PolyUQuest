@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadBffConfig, type BffConfig } from "@/lib/server/bffConfig";
 import { proxyBffRequest } from "@/lib/server/bffProxy";
+import { injectBffTraceContext } from "@/lib/server/traceContext";
 
 const encoder = new TextEncoder();
 
@@ -13,6 +14,7 @@ function config(overrides: Partial<BffConfig> = {}): BffConfig {
     maxRequestBytes: 1_024,
     upstreamTimeoutMs: 2_000,
     requireOriginForUnsafeMethods: true,
+    tracingMode: "propagate",
     ...overrides,
   };
 }
@@ -67,6 +69,47 @@ describe("BFF production configuration", () => {
 });
 
 describe("BFF route and request policy", () => {
+  it("generates a valid privacy-bounded W3C carrier without an SDK span", () => {
+    const headers = new Headers({ baggage: "private=value", tracestate: "vendor=data" });
+    injectBffTraceContext(headers);
+    expect(headers.get("traceparent")).toMatch(
+      /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/
+    );
+    expect(headers.has("baggage")).toBe(false);
+    expect(headers.has("tracestate")).toBe(false);
+  });
+  it("injects a server trace context and never copies the browser value", async () => {
+    let upstreamHeaders = new Headers();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      upstreamHeaders = new Headers(init?.headers);
+      return new Response("ok");
+    });
+    const request = postRequest("agent/runs");
+    request.headers.set(
+      "traceparent",
+      "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+    );
+    const response = await proxyBffRequest(
+      request,
+      { params: { path: ["agent", "runs"] } },
+      {
+        config: config(),
+        fetchImpl,
+        injectTraceContext: (headers) =>
+          headers.set(
+            "traceparent",
+            "00-11111111111111111111111111111111-2222222222222222-01"
+          ),
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstreamHeaders.get("traceparent")).toBe(
+      "00-11111111111111111111111111111111-2222222222222222-01"
+    );
+    expect(upstreamHeaders.get("traceparent")).not.toContain("aaaaaaaa");
+    expect(upstreamHeaders.has("baggage")).toBe(false);
+  });
   it("rejects unknown and privileged routes before calling upstream", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const unknown = await proxyBffRequest(

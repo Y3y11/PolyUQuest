@@ -38,6 +38,7 @@ class IndexJob(BaseModel):
     run_id: str
     source_url: str
     content_hash: str
+    traceparent: str = ""
     status: IndexJobStatus = "pending"
     attempts: int = 0
     total_attempts: int = 0
@@ -98,6 +99,7 @@ class IndexOutbox:
                         run_id TEXT NOT NULL,
                         source_url TEXT NOT NULL,
                         content_hash TEXT NOT NULL,
+                        traceparent TEXT NOT NULL DEFAULT '',
                         status TEXT NOT NULL,
                         attempts INTEGER NOT NULL DEFAULT 0,
                         total_attempts INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +133,10 @@ class IndexOutbox:
                         "ALTER TABLE index_jobs ADD COLUMN manual_retries "
                         "INTEGER NOT NULL DEFAULT 0"
                     )
+                if "traceparent" not in columns:
+                    connection.execute(
+                        "ALTER TABLE index_jobs ADD COLUMN traceparent TEXT NOT NULL DEFAULT ''"
+                    )
                 connection.commit()
             finally:
                 connection.close()
@@ -144,8 +150,15 @@ class IndexOutbox:
         ).hexdigest()
 
     def enqueue(
-        self, patch: GraphPatch, *, max_attempts: int | None = None
+        self,
+        patch: GraphPatch,
+        *,
+        max_attempts: int | None = None,
+        traceparent: str | None = None,
     ) -> tuple[IndexJob, bool]:
+        from agent_rag.tracing import trace_runtime
+        from agent_rag.tracing.runtime import validate_traceparent
+
         now = _iso()
         key = self.dedupe_key(patch.source_url, patch.content_hash)
         job = IndexJob(
@@ -155,6 +168,9 @@ class IndexOutbox:
             run_id=patch.run_id,
             source_url=normalize_url(patch.source_url),
             content_hash=patch.content_hash,
+            traceparent=validate_traceparent(
+                traceparent if traceparent is not None else trace_runtime.current_traceparent()
+            ),
             max_attempts=max_attempts or settings.index_job_max_attempts,
             available_at=now,
             created_at=now,
@@ -165,11 +181,11 @@ class IndexOutbox:
                 """
                 INSERT OR IGNORE INTO index_jobs(
                     job_id, dedupe_key, patch_id, run_id, source_url,
-                        content_hash, status, attempts, total_attempts,
+                        content_hash, traceparent, status, attempts, total_attempts,
                         manual_retries, max_attempts, available_at,
                     lease_until, worker_id, last_error, created_at, updated_at,
                     started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -178,6 +194,7 @@ class IndexOutbox:
                     job.run_id,
                     job.source_url,
                     job.content_hash,
+                    job.traceparent,
                     job.status,
                     job.attempts,
                     job.total_attempts,

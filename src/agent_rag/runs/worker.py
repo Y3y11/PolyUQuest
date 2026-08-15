@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 import structlog
+from opentelemetry.trace import SpanKind
 
 from agent_rag.config import settings
 from agent_rag.runs.models import AgentRunRecord
@@ -18,6 +19,7 @@ from agent_rag.runs.store import (
     AgentRunStore,
     agent_run_store,
 )
+from agent_rag.tracing import trace_runtime
 
 logger = structlog.get_logger(__name__)
 
@@ -68,6 +70,15 @@ class AgentRunWorker:
         )
         if run is None:
             return None
+        with trace_runtime.span(
+            "agent.run.execute",
+            traceparent=run.traceparent,
+            kind=SpanKind.CONSUMER,
+            attributes={"attempt": run.attempts},
+        ):
+            return await self._process_claimed(run)
+
+    async def _process_claimed(self, run: AgentRunRecord) -> AgentRunRecord | None:
         if self._agent is None:
             self._agent = self.agent_factory()
 

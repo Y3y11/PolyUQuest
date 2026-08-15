@@ -27,8 +27,17 @@ from agent_rag.config import settings
 from agent_rag.retrieval import _bm25, _embedding
 from agent_rag.security.audit import SecurityAuditMiddleware
 from agent_rag.security.store import security_audit_store
+from agent_rag.tracing import trace_runtime
 
 logger = structlog.get_logger(__name__)
+
+
+@asynccontextmanager
+async def _tracing_lifespan():
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(trace_runtime.shutdown)
 
 
 @asynccontextmanager
@@ -88,6 +97,7 @@ async def _lifespan(app: FastAPI):
     from agent_rag.runs.worker import agent_run_worker_lifespan
 
     async with (
+        _tracing_lifespan(),
         agent_run_worker_lifespan() as agent_run_worker,
         index_worker_lifespan() as worker,
         freshness_worker_lifespan() as freshness_worker,

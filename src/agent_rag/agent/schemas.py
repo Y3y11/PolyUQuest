@@ -114,6 +114,7 @@ class AgentRunSubmission(BaseModel):
     status_url: str
     events_url: str
     cancel_url: str
+    trace_id: str | None = None
 
 
 class AgentRunSnapshot(BaseModel):
@@ -131,3 +132,4 @@ class AgentRunSnapshot(BaseModel):
     error_code: str | None = None
     error: str | None = None
     result: AgentQueryResponse | None = None
+    trace_id: str | None = None

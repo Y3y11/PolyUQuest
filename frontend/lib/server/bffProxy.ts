@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { getBffConfig, type BffConfig } from "./bffConfig";
+import { injectBffTraceContext } from "./traceContext";
 
 export interface BffRouteContext {
   params: { path?: string[] };
@@ -10,6 +11,7 @@ interface BffDependencies {
   config?: BffConfig;
   fetchImpl?: typeof fetch;
   createRequestId?: () => string;
+  injectTraceContext?: (headers: Headers) => void;
 }
 
 interface RouteRule {
@@ -243,6 +245,9 @@ export async function proxyBffRequest(
     headers.set("Last-Event-ID", lastEventId);
   }
   if (config.backendApiKey) headers.set("X-API-Key", config.backendApiKey);
+  if (config.tracingMode !== "disabled") {
+    (dependencies.injectTraceContext ?? injectBffTraceContext)(headers);
+  }
 
   const upstreamController = new AbortController();
   let timedOut = false;

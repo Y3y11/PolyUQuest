@@ -18,6 +18,7 @@ import structlog
 from agent_rag.config import agent_config, llm_config, observability_config
 from agent_rag.telemetry.models import RunTelemetry, TelemetrySpan, utc_now
 from agent_rag.telemetry.store import TelemetryStore, telemetry_store
+from agent_rag.tracing import trace_runtime
 
 logger = structlog.get_logger(__name__)
 _current_run: ContextVar[str | None] = ContextVar("telemetry_run", default=None)
@@ -146,6 +147,30 @@ class TelemetryRecorder:
         self._safe(
             self.store.append_span,
             TelemetrySpan(span_id=f"span-{uuid.uuid4().hex}", run_id=selected, **values),
+        )
+        attributes = values.get("attributes", {}) or {}
+        mapped = {
+            "iteration": attributes.get("iteration"),
+            "evidence.count": attributes.get("evidence"),
+            "frontier.count": attributes.get("frontier"),
+            "candidate.count": attributes.get("candidates"),
+            "route.mode": attributes.get("route_mode"),
+            "route.source": attributes.get("route_source"),
+            "route.confidence": attributes.get("route_confidence"),
+            "relevant_block.count": attributes.get("relevant_blocks"),
+            "webpage.count": attributes.get("webpages_written"),
+            "block.count": attributes.get("blocks_written"),
+            "link.count": attributes.get("links_written"),
+            "cache.hit": values.get("cache_hit"),
+            "token.input": values.get("logical_input_tokens"),
+            "token.output": values.get("logical_output_tokens"),
+        }
+        trace_runtime.completed_span(
+            "llm.chat" if values.get("operation") == "llm.chat" else "agent.stage",
+            duration_ms=int(values.get("duration_ms", 0) or 0),
+            status=str(values.get("status", "succeeded")),
+            attributes={key: value for key, value in mapped.items() if value is not None},
+            error_type=str(values.get("error_category", "")),
         )
 
     def record_llm(

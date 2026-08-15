@@ -13,6 +13,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from opentelemetry.trace import SpanKind
 
 from agent_rag.agent.schemas import (
     AgentQueryRequest,
@@ -34,6 +35,7 @@ from agent_rag.runs.store import (
 from agent_rag.runtime import build_query_agent
 from agent_rag.security.auth import require_role
 from agent_rag.security.models import Role
+from agent_rag.tracing import trace_runtime
 from agent_rag.workers.status import worker_status_store
 
 logger = structlog.get_logger(__name__)
@@ -86,6 +88,7 @@ async def _snapshot(run: AgentRunRecord) -> AgentRunSnapshot:
         error_code=run.last_error_code,
         error="Agent Run failed" if run.status == "failed" else None,
         result=run.result,
+        trace_id=run.trace_id,
     )
 
 
@@ -97,12 +100,21 @@ async def _snapshot(run: AgentRunRecord) -> AgentRunSnapshot:
 async def create_agent_run(
     request: AgentQueryRequest,
     idempotency_key: str = Header(alias="Idempotency-Key"),
+    traceparent: str | None = Header(default=None, alias="traceparent"),
 ) -> AgentRunSubmission:
     _enforce_persistence_gate(request)
     try:
-        run, created = await asyncio.to_thread(
-            agent_run_store.create, request, idempotency_key
-        )
+        with trace_runtime.span(
+            "agent.run.submit",
+            traceparent=traceparent,
+            kind=SpanKind.PRODUCER,
+        ) as active_trace:
+            run, created = await asyncio.to_thread(
+                agent_run_store.create,
+                request,
+                idempotency_key,
+                traceparent=active_trace.traceparent,
+            )
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except AgentRunAdmissionRejectedError as exc:
@@ -126,6 +138,7 @@ async def create_agent_run(
         status_url=base,
         events_url=f"{base}/events",
         cancel_url=f"{base}/cancel",
+        trace_id=run.trace_id,
     )
 
 

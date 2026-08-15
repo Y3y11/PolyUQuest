@@ -11,12 +11,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import structlog
+from opentelemetry.trace import SpanKind
 
 from agent_rag.config import settings
 from agent_rag.indexing.outbox import IndexJob, IndexOutbox, index_outbox
 from agent_rag.telemetry import TelemetryRecorder, telemetry_recorder
 from agent_rag.tools.graph_patch import PublishPatchTool
 from agent_rag.tools.schemas import PublishPatchInput
+from agent_rag.tracing import trace_runtime
 
 logger = structlog.get_logger(__name__)
 
@@ -69,6 +71,15 @@ class IndexWorker:
         job = self.outbox.claim(self.worker_id, lease_seconds=self.lease_seconds)
         if job is None:
             return None
+        with trace_runtime.span(
+            "knowledge.index.execute",
+            traceparent=job.traceparent,
+            kind=SpanKind.CONSUMER,
+            attributes={"attempt": job.attempts},
+        ):
+            return self._process_claimed(job)
+
+    def _process_claimed(self, job: IndexJob) -> IndexJob:
         telemetry_run_id = f"index-{job.job_id}-{job.total_attempts}"
         telemetry_started = time.perf_counter()
         self.telemetry.start_run(
