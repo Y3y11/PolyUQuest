@@ -1,6 +1,6 @@
 # PolyUQuest Agent Runtime 容量治理与准入控制 PRD
 
-> 迭代 21 · 2026-08-14 · 状态：本地实现与回归完成，等待 GitHub Linux 门禁
+> 迭代 21 · 2026-08-14～15 · 状态：实现、本地回归与 GitHub Linux 门禁全部完成
 
 ## 1. 业务背景
 
@@ -204,6 +204,17 @@ Health 新增 admission enabled、limits、utilization、warn_ratio。运维应�
 - 前端 Vitest：18 passed；TypeScript 无增量类型检查：通过；
 - 本轮修改文件 Ruff、deployment policy、production/topology Compose config：通过；
 - 本机 Docker daemon 未运行，真实 BFF/Worker/Neo4j/Qdrant 组合回归交由 GitHub Linux 门禁。
+
+远端验收结果（提交 `c3a28e6`，2026-08-15）：
+
+- Production Topology E2E Gate `31858353715`：success；
+- Linux topology/admission/API/worker 定向测试：32 passed；
+- Topology Driver：`status=passed`、14 checks、129,525 ms；
+- artifact `production-topology-e2e-c3a28e6b03494f30fc5ed0b3ed3fe4d129582412`，18,826 bytes；
+- Business E2E Gate `31858353648`：success；
+- Browser BFF SSE Gate `31858353650`：success；
+- Container Supply Chain Gate `31858353740`：success；
+- 四条门禁共同证明原知识闭环、生产 BFF、Durable chaos 和镜像合同在准入改造后无回归。
 
 ## 11. 文件级修改计划
 
