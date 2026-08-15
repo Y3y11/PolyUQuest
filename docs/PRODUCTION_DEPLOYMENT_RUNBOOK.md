@@ -23,7 +23,9 @@ python -m agent_rag.security.cli --key-id operations-admin --role admin
 
 把两条 hash-only record 写入 `API_AUTH_KEYS`。reader raw key 单独写入受限文件，并把路径配置为 `BFF_BACKEND_API_KEY_FILE`；admin raw key 只交给运维端。必须替换示例中的 Neo4j 密码、DeepSeek/SiliconFlow key、CORS/BFF origin、secret file 路径和镜像标签。完整步骤见 `docs/BROWSER_BFF_SSE_RUNBOOK.md`。
 
-生产应用会二次校验以下条件并 fail-fast：认证不能关闭、Neo4j 不能使用开发默认密码、reload 不能开启、当前远程 LLM/embedding provider 必须有凭证。
+生产应用会二次校验以下条件并 fail-fast：认证不能关闭、Neo4j 不能使用开发默认密码、reload 不能开启、当前远程 LLM/embedding provider 必须有凭证、waiting 不能超过 active、容量告警比例与部署预算必须合法。API 与 Worker 必须使用相同的 Admission 配置。
+
+首次上线建议保留示例的 `100 active / 80 waiting` 保护上限，再根据真实吞吐逐步收紧。它不是容量承诺；单 Worker 的稳定容量应通过排队等待、P95/P99、模型费用和网页访问额度共同校准。
 
 ## 3. 部署前验收
 
@@ -45,7 +47,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml ps
 docker compose --env-file deploy/.env.production -f compose.production.yml logs --tail 200 worker api
 ```
 
-验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready` 且 capabilities 包含 `agent-run`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF 先创建 durable Run，再通过带事件 ID 的 SSE 逐步返回并关联 BFF/API request IDs；刷新页面后应恢复同一 run_id，而不是重新执行。最后用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。详见 `docs/DURABLE_AGENT_RUN_RUNBOOK.md`。
+验收要求：API liveness、readiness 和前端均返回 2xx；日志出现 `worker_process_ready` 且 capabilities 包含 `agent-run`；Neo4j/Qdrant 无宿主机端口；浏览器查询只访问同源 `/api` 且不携带 `X-API-Key`；BFF 先创建 durable Run，再通过带事件 ID 的 SSE 逐步返回并关联 BFF/API request IDs；刷新页面后应恢复同一 run_id，而不是重新执行。以受控小上限执行并发冒烟，确认超限返回 429/Retry-After、完成后恢复接收、同 key 重提仍返回原 run。最后用一条需要在线探索的问题验证 outbox 最终完成和图统计增长。详见 `docs/DURABLE_AGENT_RUN_RUNBOOK.md`。
 
 ## 5. 常规升级
 
@@ -96,6 +98,7 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - 仅应用故障：把镜像标签改回上一版并 `up -d api worker frontend`，不恢复数据。
 - schema 或写入不兼容：停止服务，确认当前数据是否需要额外留档，再恢复升级前备份。
 - Worker 卡住：先查看 Agent Run、Index Job 当前租约与 outbox；`docker compose stop worker` 会等待 75 秒。超时取消后，Agent Run 由 lease 重新执行，知识发布由幂等 patch/outbox 和下一次启动恢复。
+- 大量 429：先区分正常削峰与 Worker 故障；查看 admission counters、capacity utilization、queue age 和 Worker heartbeat。禁止让客户端无 jitter 高频重试。
 - API live 正常但 ready 失败：检查 embedding warm-up、Neo4j/Qdrant 连通性和模型凭证，禁止仅靠重启掩盖持续错误。
 - 磁盘不足：先停止写入，扩容或迁移卷；不要手工删除 Neo4j/Qdrant 文件。
 
@@ -104,4 +107,5 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - 这是单机冷备份方案，不提供零停机与跨区容灾。
 - BFF 的共享 reader key 只是工作负载边界；企业浏览器访问仍需要外部 SSO/ingress 识别最终用户。
 - Compose 资源限制需要结合实际 corpus、模型与并发压测校准。
+- 当前 Admission 是全局容量，不是 tenant/user quota；共享 BFF reader 无法提供可信租户归属。
 - 下一阶段应引入镜像 digest/SBOM/签名、CI BuildKit、集中日志指标、Neo4j/Qdrant 官方在线 snapshot/backup 和自动恢复演练。

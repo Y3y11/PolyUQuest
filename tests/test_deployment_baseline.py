@@ -111,6 +111,26 @@ class ProductionConfigurationTests(unittest.TestCase):
                 agent_run_queue_critical_seconds=30,
             )
 
+    def test_agent_run_admission_limits_are_consistent(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "AGENT_RUN_ADMISSION_MAX_WAITING"
+        ):
+            Settings(
+                _env_file=None,
+                agent_run_admission_max_active=5,
+                agent_run_admission_max_waiting=6,
+            )
+        with self.assertRaisesRegex(
+            ValidationError, "AGENT_RUN_ADMISSION_WARN_RATIO"
+        ):
+            Settings(_env_file=None, agent_run_admission_warn_ratio=1.0)
+
+    def test_agent_run_deployment_budget_cannot_exceed_public_schema(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "AGENT_RUN_BUDGET_MAX_PAGES"
+        ):
+            Settings(_env_file=None, agent_run_budget_max_pages=21)
+
     def test_production_requires_explicit_runtime_profile(self) -> None:
         with self.assertRaisesRegex(ValidationError, "explicit APP_RUNTIME_PROFILE"):
             _production_settings(app_runtime_profile="auto")

@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     agent_run_sse_keepalive_seconds: float = 15.0
     agent_run_queue_warn_seconds: float = 30.0
     agent_run_queue_critical_seconds: float = 120.0
+    agent_run_admission_enabled: bool = True
+    agent_run_admission_max_active: int = 100
+    agent_run_admission_max_waiting: int = 80
+    agent_run_admission_retry_after_seconds: int = 5
+    agent_run_admission_warn_ratio: float = 0.8
+    agent_run_budget_max_iterations: int = 5
+    agent_run_budget_max_pages: int = 10
+    agent_run_budget_max_seconds: int = 120
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -202,6 +210,47 @@ class Settings(BaseSettings):
                 "AGENT_RUN_QUEUE_CRITICAL_SECONDS must be greater than "
                 "AGENT_RUN_QUEUE_WARN_SECONDS"
             )
+        if self.agent_run_admission_max_active <= 0:
+            raise ValueError("AGENT_RUN_ADMISSION_MAX_ACTIVE must be positive")
+        if self.agent_run_admission_max_waiting <= 0:
+            raise ValueError("AGENT_RUN_ADMISSION_MAX_WAITING must be positive")
+        if (
+            self.agent_run_admission_max_waiting
+            > self.agent_run_admission_max_active
+        ):
+            raise ValueError(
+                "AGENT_RUN_ADMISSION_MAX_WAITING cannot exceed "
+                "AGENT_RUN_ADMISSION_MAX_ACTIVE"
+            )
+        if self.agent_run_admission_retry_after_seconds <= 0:
+            raise ValueError(
+                "AGENT_RUN_ADMISSION_RETRY_AFTER_SECONDS must be positive"
+            )
+        if not 0 < self.agent_run_admission_warn_ratio < 1:
+            raise ValueError(
+                "AGENT_RUN_ADMISSION_WARN_RATIO must be between 0 and 1"
+            )
+        from agent_rag.limits import AGENT_BUDGET_LIMITS
+
+        configured_budget_limits = {
+            "AGENT_RUN_BUDGET_MAX_ITERATIONS": (
+                self.agent_run_budget_max_iterations,
+                AGENT_BUDGET_LIMITS["max_iterations"],
+            ),
+            "AGENT_RUN_BUDGET_MAX_PAGES": (
+                self.agent_run_budget_max_pages,
+                AGENT_BUDGET_LIMITS["max_pages"],
+            ),
+            "AGENT_RUN_BUDGET_MAX_SECONDS": (
+                self.agent_run_budget_max_seconds,
+                AGENT_BUDGET_LIMITS["max_seconds"],
+            ),
+        }
+        for name, (configured, public_limit) in configured_budget_limits.items():
+            if configured <= 0 or configured > public_limit:
+                raise ValueError(
+                    f"{name} must be positive and no greater than {public_limit}"
+                )
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:

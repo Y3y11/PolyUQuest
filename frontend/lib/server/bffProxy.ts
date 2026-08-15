@@ -43,7 +43,8 @@ function jsonError(
   status: number,
   error: string,
   requestId?: string,
-  detail?: unknown
+  detail?: unknown,
+  additionalHeaders: Record<string, string> = {}
 ): Response {
   return Response.json(
     {
@@ -56,6 +57,7 @@ function jsonError(
       headers: {
         "Cache-Control": "no-store",
         ...(requestId ? { "X-BFF-Request-ID": requestId } : {}),
+        ...additionalHeaders,
       },
     }
   );
@@ -274,7 +276,17 @@ export async function proxyBffRequest(
     request.signal.removeEventListener("abort", onRequestAbort);
     if ([400, 409, 422, 429].includes(upstream.status)) {
       const detail = await safeUpstreamDetail(upstream);
-      return jsonError(upstream.status, "backend_rejected_request", requestId, detail);
+      const rawRetryAfter =
+        upstream.status === 429 ? upstream.headers.get("retry-after") : null;
+      const retryAfter =
+        rawRetryAfter && /^\d{1,6}$/.test(rawRetryAfter) ? rawRetryAfter : null;
+      return jsonError(
+        upstream.status,
+        "backend_rejected_request",
+        requestId,
+        detail,
+        retryAfter ? { "Retry-After": retryAfter } : {}
+      );
     }
     if ([401, 403].includes(upstream.status)) {
       return jsonError(502, "backend_authentication_failed", requestId);

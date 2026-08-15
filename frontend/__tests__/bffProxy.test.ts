@@ -186,6 +186,36 @@ describe("BFF route and request policy", () => {
 });
 
 describe("BFF upstream and SSE contract", () => {
+  it("preserves safe admission 429 detail and Retry-After", async () => {
+    const request = postRequest("agent/runs");
+    request.headers.set("Idempotency-Key", "browser-capacity-000001");
+    const response = await proxyBffRequest(
+      request,
+      { params: { path: ["agent", "runs"] } },
+      {
+        config: config(),
+        fetchImpl: async () =>
+          Response.json(
+            {
+              detail: {
+                code: "agent_run_capacity_exceeded",
+                reason: "active_limit",
+                retry_after_seconds: 7,
+              },
+            },
+            { status: 429, headers: { "Retry-After": "7" } }
+          ),
+      }
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("7");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json();
+    expect(body.error).toBe("backend_rejected_request");
+    expect(body.detail.code).toBe("agent_run_capacity_exceeded");
+  });
+
   it("injects the server key and preserves ordered SSE chunks", async () => {
     let upstreamHeaders: Headers | undefined;
     const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {

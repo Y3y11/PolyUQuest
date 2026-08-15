@@ -16,6 +16,11 @@ from typing import Any
 
 from agent_rag.agent.schemas import AgentQueryRequest, AgentQueryResponse
 from agent_rag.config import settings
+from agent_rag.runs.admission import (
+    AgentRunAdmissionPolicy,
+    AgentRunAdmissionRejectedError,
+    AgentRunBudgetRejectedError,
+)
 from agent_rag.runs.models import (
     TERMINAL_AGENT_RUN_STATUSES,
     AgentRunEvent,
@@ -62,12 +67,18 @@ def _request_payload(request: AgentQueryRequest) -> tuple[str, str]:
 
 
 class AgentRunStore:
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        admission_policy: AgentRunAdmissionPolicy | None = None,
+    ):
         path = Path(db_path or settings.agent_run_store_path)
         if not path.is_absolute():
             path = Path(__file__).resolve().parents[3] / path
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.default_admission_policy = admission_policy
         self._init_lock = threading.Lock()
         self._initialized = False
         self._ensure_schema()
@@ -138,6 +149,12 @@ class AgentRunStore:
                     );
                     CREATE INDEX IF NOT EXISTS idx_agent_run_events_replay
                     ON agent_run_events(run_id, event_id);
+
+                    CREATE TABLE IF NOT EXISTS agent_run_admission_counters (
+                        metric TEXT PRIMARY KEY,
+                        value INTEGER NOT NULL DEFAULT 0,
+                        updated_at TEXT NOT NULL
+                    );
                     """
                 )
                 connection.commit()
@@ -181,15 +198,49 @@ class AgentRunStore:
             created_at=now,
         )
 
+    @staticmethod
+    def _increment_admission_counter_tx(
+        connection: sqlite3.Connection,
+        metric: str,
+        *,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO agent_run_admission_counters(metric, value, updated_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(metric) DO UPDATE SET
+                value=value+1,
+                updated_at=excluded.updated_at""",
+            (metric, created_at),
+        )
+
+    @staticmethod
+    def _capacity_tx(connection: sqlite3.Connection) -> tuple[int, int]:
+        row = connection.execute(
+            """SELECT
+            coalesce(sum(CASE WHEN status IN ('queued', 'running', 'retry')
+                THEN 1 ELSE 0 END), 0) AS active,
+            coalesce(sum(CASE WHEN status IN ('queued', 'retry')
+                THEN 1 ELSE 0 END), 0) AS waiting
+            FROM agent_runs"""
+        ).fetchone()
+        return int(row["active"]), int(row["waiting"])
+
     def create(
         self,
         request: AgentQueryRequest,
         idempotency_key: str,
         *,
         max_attempts: int | None = None,
+        admission_policy: AgentRunAdmissionPolicy | None = None,
     ) -> tuple[AgentRunRecord, bool]:
         key = self.validate_idempotency_key(idempotency_key)
         request_json, fingerprint = _request_payload(request)
+        policy = (
+            admission_policy
+            or self.default_admission_policy
+            or AgentRunAdmissionPolicy.from_settings(settings)
+        )
         now = _iso()
         run = AgentRunRecord(
             run_id=f"run-{uuid.uuid4().hex}",
@@ -201,6 +252,8 @@ class AgentRunStore:
             created_at=now,
             updated_at=now,
         )
+        capacity_rejection: AgentRunAdmissionRejectedError | None = None
+        budget_rejection: AgentRunBudgetRejectedError | None = None
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -212,44 +265,93 @@ class AgentRunStore:
                     raise IdempotencyConflictError(
                         "Idempotency-Key was already used for another request"
                     )
+                self._increment_admission_counter_tx(
+                    connection,
+                    "idempotent_replays",
+                    created_at=now,
+                )
                 return current, False
-            connection.execute(
-                """INSERT INTO agent_runs(
-                    run_id, idempotency_key, request_fingerprint, request_json,
-                    result_json, status, attempts, max_attempts, available_at,
-                    lease_until, worker_id, cancel_requested_at,
-                    last_error_code, last_error, created_at, updated_at,
-                    started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run.run_id,
-                    run.idempotency_key,
-                    run.request_fingerprint,
-                    run.request_json,
-                    run.result_json,
-                    run.status,
-                    run.attempts,
-                    run.max_attempts,
-                    run.available_at,
-                    run.lease_until,
-                    run.worker_id,
-                    run.cancel_requested_at,
-                    run.last_error_code,
-                    run.last_error,
-                    run.created_at,
-                    run.updated_at,
-                    run.started_at,
-                    run.completed_at,
-                ),
-            )
-            self._append_event_tx(
-                connection,
-                run_id=run.run_id,
-                attempt=0,
-                event_type="run_queued",
-                payload={"run_id": run.run_id, "status": "queued"},
-                created_at=now,
-            )
+            violation = policy.budget_violation(request)
+            if violation is not None:
+                field, requested, allowed = violation
+                budget_rejection = AgentRunBudgetRejectedError(
+                    field=field,
+                    requested=requested,
+                    allowed=allowed,
+                )
+                self._increment_admission_counter_tx(
+                    connection,
+                    "rejected_budget",
+                    created_at=now,
+                )
+            else:
+                active, waiting = self._capacity_tx(connection)
+                reason = None
+                if policy.enabled and active >= policy.max_active:
+                    reason = "active_limit"
+                elif policy.enabled and waiting >= policy.max_waiting:
+                    reason = "waiting_limit"
+                if reason is not None:
+                    capacity_rejection = AgentRunAdmissionRejectedError(
+                        reason=reason,
+                        retry_after_seconds=policy.retry_after_seconds,
+                        active=active,
+                        waiting=waiting,
+                        max_active=policy.max_active,
+                        max_waiting=policy.max_waiting,
+                    )
+                    self._increment_admission_counter_tx(
+                        connection,
+                        f"rejected_{reason.removesuffix('_limit')}",
+                        created_at=now,
+                    )
+                else:
+                    connection.execute(
+                        """INSERT INTO agent_runs(
+                            run_id, idempotency_key, request_fingerprint,
+                            request_json, result_json, status, attempts,
+                            max_attempts, available_at, lease_until, worker_id,
+                            cancel_requested_at, last_error_code, last_error,
+                            created_at, updated_at, started_at, completed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            run.run_id,
+                            run.idempotency_key,
+                            run.request_fingerprint,
+                            run.request_json,
+                            run.result_json,
+                            run.status,
+                            run.attempts,
+                            run.max_attempts,
+                            run.available_at,
+                            run.lease_until,
+                            run.worker_id,
+                            run.cancel_requested_at,
+                            run.last_error_code,
+                            run.last_error,
+                            run.created_at,
+                            run.updated_at,
+                            run.started_at,
+                            run.completed_at,
+                        ),
+                    )
+                    self._append_event_tx(
+                        connection,
+                        run_id=run.run_id,
+                        attempt=0,
+                        event_type="run_queued",
+                        payload={"run_id": run.run_id, "status": "queued"},
+                        created_at=now,
+                    )
+                    self._increment_admission_counter_tx(
+                        connection,
+                        "accepted",
+                        created_at=now,
+                    )
+        if budget_rejection is not None:
+            raise budget_rejection
+        if capacity_rejection is not None:
+            raise capacity_rejection
         return run, True
 
     def get(self, run_id: str) -> AgentRunRecord | None:
@@ -623,6 +725,9 @@ class AgentRunStore:
                 """SELECT payload_json FROM agent_run_events
                 WHERE event_type='run_attempt_started'"""
             ).fetchall()
+            admission_rows = connection.execute(
+                "SELECT metric, value FROM agent_run_admission_counters"
+            ).fetchall()
         result: dict[str, int | float] = {
             status: 0
             for status in (
@@ -649,6 +754,9 @@ class AgentRunStore:
         result["active"] = sum(
             int(result[status]) for status in ("queued", "running", "retry")
         )
+        result["waiting"] = sum(
+            int(result[status]) for status in ("queued", "retry")
+        )
         result["terminal"] = sum(
             int(result[status])
             for status in ("completed", "failed", "cancelled")
@@ -668,6 +776,25 @@ class AgentRunStore:
             if metric is not None:
                 claim_reasons[metric] += 1
         result.update(claim_reasons)
+        admission_counters = {
+            "admission_accepted_total": 0,
+            "admission_idempotent_replays_total": 0,
+            "admission_rejected_active_total": 0,
+            "admission_rejected_waiting_total": 0,
+            "admission_rejected_budget_total": 0,
+        }
+        metric_names = {
+            "accepted": "admission_accepted_total",
+            "idempotent_replays": "admission_idempotent_replays_total",
+            "rejected_active": "admission_rejected_active_total",
+            "rejected_waiting": "admission_rejected_waiting_total",
+            "rejected_budget": "admission_rejected_budget_total",
+        }
+        for row in admission_rows:
+            selected = metric_names.get(str(row["metric"]))
+            if selected is not None:
+                admission_counters[selected] = int(row["value"])
+        result.update(admission_counters)
         oldest_age = 0.0
         if oldest and oldest["oldest"]:
             oldest_age = max(

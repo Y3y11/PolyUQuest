@@ -8,8 +8,9 @@ import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from agent_rag.agent.schemas import AgentQueryRequest, AgentQueryResponse
+from agent_rag.agent.schemas import AgentBudget, AgentQueryRequest, AgentQueryResponse
 from agent_rag.api.routes import agent_router
+from agent_rag.runs.admission import AgentRunAdmissionPolicy
 from agent_rag.runs.store import AgentRunStore
 
 
@@ -32,6 +33,21 @@ def _response(run_id: str) -> AgentQueryResponse:
         answer="Apply through the official admissions portal. [1]",
         response_status="answered",
         mode="mode_b",
+    )
+
+
+def _admission_policy(
+    *, max_active: int = 1, max_waiting: int = 1
+) -> AgentRunAdmissionPolicy:
+    return AgentRunAdmissionPolicy(
+        enabled=True,
+        max_active=max_active,
+        max_waiting=max_waiting,
+        retry_after_seconds=7,
+        warn_ratio=0.8,
+        max_iterations=5,
+        max_pages=10,
+        max_seconds=120,
     )
 
 
@@ -210,3 +226,91 @@ async def test_run_health_selects_agent_worker_not_latest_other_capability(
     assert isinstance(health, dict)
     assert health["status"] == "ok"
     assert health["worker_instance_id"] == "worker-older-agent"
+
+
+@pytest.mark.asyncio
+async def test_run_creation_returns_safe_429_with_retry_after(tmp_path: Path) -> None:
+    store = AgentRunStore(
+        tmp_path / "runs.sqlite3",
+        admission_policy=_admission_policy(),
+    )
+    store.create(_request("First"), "browser-capacity-000001")
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        pytest.raises(HTTPException) as raised,
+    ):
+        await agent_router.create_agent_run(
+            _request("Second"),
+            "browser-capacity-000002",
+        )
+
+    error = raised.value
+    assert error.status_code == 429
+    assert error.headers == {"Retry-After": "7"}
+    assert error.detail["code"] == "agent_run_capacity_exceeded"
+    assert error.detail["reason"] == "active_limit"
+    assert "First" not in str(error.detail)
+    assert "Second" not in str(error.detail)
+
+
+@pytest.mark.asyncio
+async def test_run_creation_returns_structured_budget_rejection(tmp_path: Path) -> None:
+    store = AgentRunStore(
+        tmp_path / "runs.sqlite3",
+        admission_policy=_admission_policy(),
+    )
+    request = AgentQueryRequest(
+        query="Large exploration",
+        explore_web=True,
+        persist_discoveries=False,
+        budget=AgentBudget(max_iterations=5, max_pages=11, max_seconds=120),
+    )
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        pytest.raises(HTTPException) as raised,
+    ):
+        await agent_router.create_agent_run(
+            request,
+            "browser-budget-0000001",
+        )
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail == {
+        "code": "agent_run_budget_exceeded",
+        "field": "max_pages",
+        "requested": 11,
+        "allowed": 10,
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_health_reports_capacity_warning(tmp_path: Path) -> None:
+    policy = _admission_policy(max_active=10, max_waiting=10)
+    store = AgentRunStore(tmp_path / "runs.sqlite3", admission_policy=policy)
+    for index in range(8):
+        store.create(_request(f"Question {index}"), f"browser-health-{index:08d}")
+    worker = SimpleNamespace(
+        instance_id="worker-capacity",
+        healthy=True,
+        capabilities=["agent-run"],
+    )
+    status_store = SimpleNamespace(list=lambda **_kwargs: [worker])
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_run_worker=None))
+    )
+    with (
+        patch.object(agent_router, "agent_run_store", store),
+        patch.object(agent_router, "worker_status_store", status_store),
+        patch.object(
+            agent_router.AgentRunAdmissionPolicy,
+            "from_settings",
+            return_value=policy,
+        ),
+    ):
+        health = await agent_router.get_agent_run_health(request)
+
+    assert isinstance(health, dict)
+    assert health["status"] == "degraded"
+    assert "active_capacity_warning" in health["reasons"]
+    assert "waiting_capacity_warning" in health["reasons"]
+    assert health["admission"]["active_utilization"] == 0.8

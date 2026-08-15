@@ -163,18 +163,51 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(
+    message: string,
+    options: { status: number; code?: string; retryAfterSeconds?: number | null }
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.code = options.code || "api_error";
+    this.retryAfterSeconds = options.retryAfterSeconds ?? null;
+  }
+}
+
 async function apiFetch<T>(
   input: RequestInfo,
   init?: RequestInit
 ): Promise<T> {
   const res = await fetch(input, init);
   if (!res.ok) {
-    let detail = "";
+    let payload: unknown = null;
     try {
-      const body = await res.text();
-      detail = body ? ` — ${body.slice(0, 200)}` : "";
+      payload = await res.json();
     } catch {}
-    throw new Error(`API error ${res.status}: ${res.statusText}${detail}`);
+    const detail =
+      payload && typeof payload === "object" && "detail" in payload
+        ? (payload as { detail?: unknown }).detail
+        : null;
+    const code =
+      detail && typeof detail === "object" && "code" in detail
+        ? String((detail as { code?: unknown }).code || "")
+        : "";
+    const rawRetryAfter = res.headers.get("retry-after");
+    const retryAfterSeconds =
+      rawRetryAfter && /^\d{1,6}$/.test(rawRetryAfter)
+        ? Number(rawRetryAfter)
+        : null;
+    throw new ApiError(`API request rejected with status ${res.status}`, {
+      status: res.status,
+      code,
+      retryAfterSeconds,
+    });
   }
   return res.json();
 }

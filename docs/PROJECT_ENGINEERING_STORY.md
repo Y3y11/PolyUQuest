@@ -292,6 +292,8 @@ Telemetry + Evaluation
 - Durable Chaos Topology：把真实 Next.js BFF、FastAPI、共享 Run Store 与独立 Worker 放入同一 Linux
   场景，验证浏览器断流不取消任务、Worker SIGKILL 后 lease reclaim、游标重放与幂等重提；health/stats
   将 Worker capability、队列年龄、应用重试和租约接管变成可告警的机器合同。
+- Atomic Admission Control：将幂等查询、部署预算、active/waiting 计数、拒绝指标和 Run 插入放进同一
+  SQLite 写事务，避免并发先查后写穿透；429/Retry-After 经 BFF 安全透传，Health 同时表达队列年龄与容量利用率。
 - Docker capability profile + Policy-as-Code：默认 remote 镜像不携带本地 ML 栈；Linux CI
   同时验证 non-root/read-only 运行合同、SBOM/CVE 和真实业务/拓扑/BFF 场景。
 
@@ -334,6 +336,7 @@ Telemetry + Evaluation
 - `docs/BROWSER_BFF_SSE_PRD.md`：浏览器同源 BFF、凭据隔离与 SSE 交付；
 - `docs/DURABLE_AGENT_RUN_PRD.md`：持久化 Run、Worker lease、事件重放与显式取消；
 - `docs/DURABLE_AGENT_RUN_CHAOS_E2E_PRD.md`：真实 BFF 到 Worker 的故障注入、lease 接管与运行健康；
+- `docs/AGENT_RUNTIME_ADMISSION_CONTROL_PRD.md`：原子准入、部署预算、429 过载合同与容量指标；
 - `docs/DOM_DIFF_INCREMENTAL_INDEXING_PRD.md`：DOM Diff、局部向量更新与页面版本；
 - `docs/INCREMENTAL_KNOWLEDGE_TEMPORALITY_PRD.md`：增量实体关系与事实时态；
 - 本地 `docs/ITERATION_QUERY_DRIVEN_AGENT_MVP.md`：逐轮问题、修改和验证记录。

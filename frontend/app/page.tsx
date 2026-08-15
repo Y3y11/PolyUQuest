@@ -23,6 +23,7 @@ import TopNav from "@/components/TopNav";
 import PersonaPicker from "@/components/PersonaPicker";
 import SuggestionBubbles from "@/components/SuggestionBubbles";
 import {
+  ApiError,
   cancelAgentRunAPI,
   createAgentRunAPI,
   recentHistory,
@@ -444,11 +445,16 @@ export default function HomePage() {
       await consumeAgentRun(active, ctrl);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
+        const content =
+          err instanceof ApiError && err.status === 429
+            ? `当前 Agent 任务较多，请在 ${err.retryAfterSeconds ?? 5} 秒后重试。`
+            : err instanceof ApiError && err.code === "agent_run_budget_exceeded"
+              ? "本次探索预算超过系统限制，请缩小问题范围后重试。"
+              : "Agent 执行失败，请确认后端 API、DeepSeek 和机构网站均可访问。";
         setMessages((prev) => {
           return updateLatestAssistant(prev, (message) => ({
             ...message,
-            content:
-              "Agent 执行失败，请确认后端 API、DeepSeek 和机构网站均可访问。",
+            content,
           }));
         });
       }

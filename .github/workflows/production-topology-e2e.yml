@@ -27,7 +27,10 @@ on:
       - "src/agent_rag/versioning/**"
       - "src/agent_rag/workers/**"
       - "src/agent_rag/config.py"
+      - "src/agent_rag/limits.py"
       - "src/agent_rag/runtime.py"
+      - "tests/test_agent_run_admission.py"
+      - "tests/test_agent_run_api.py"
       - "tests/test_topology_e2e_contract.py"
       - "tests/test_worker_status.py"
       - "frontend/Dockerfile"
@@ -58,7 +61,10 @@ on:
       - "src/agent_rag/versioning/**"
       - "src/agent_rag/workers/**"
       - "src/agent_rag/config.py"
+      - "src/agent_rag/limits.py"
       - "src/agent_rag/runtime.py"
+      - "tests/test_agent_run_admission.py"
+      - "tests/test_agent_run_api.py"
       - "tests/test_topology_e2e_contract.py"
       - "tests/test_worker_status.py"
       - "frontend/Dockerfile"
@@ -122,7 +128,9 @@ jobs:
         run: >-
           uv run --no-sync pytest
           tests/test_topology_e2e_contract.py
-          tests/test_worker_status.py -q
+          tests/test_worker_status.py
+          tests/test_agent_run_admission.py
+          tests/test_agent_run_api.py -q
 
       - name: Lint topology implementation
         run: >-
@@ -131,12 +139,17 @@ jobs:
           src/agent_rag/e2e/topology_runtime.py
           src/agent_rag/e2e/fixture_app.py
           src/agent_rag/e2e/topology_driver.py
+          src/agent_rag/limits.py
+          src/agent_rag/agent/schemas.py
+          src/agent_rag/runs/admission.py
           src/agent_rag/runs/store.py
           src/agent_rag/api/routes/agent_router.py
           src/agent_rag/workers/status.py
           src/agent_rag/api/routes/worker_router.py
           tests/test_topology_e2e_contract.py
           tests/test_worker_status.py
+          tests/test_agent_run_admission.py
+          tests/test_agent_run_api.py
 
       - name: Validate deployment and supply-chain policy
         run: |

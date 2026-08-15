@@ -21,6 +21,14 @@ AGENT_RUN_STORE_PATH=data/runtime/agent_runs.sqlite3
 AGENT_RUN_WORKER_ENABLED=true
 AGENT_RUN_QUEUE_WARN_SECONDS=30
 AGENT_RUN_QUEUE_CRITICAL_SECONDS=120
+AGENT_RUN_ADMISSION_ENABLED=true
+AGENT_RUN_ADMISSION_MAX_ACTIVE=100
+AGENT_RUN_ADMISSION_MAX_WAITING=80
+AGENT_RUN_ADMISSION_RETRY_AFTER_SECONDS=5
+AGENT_RUN_ADMISSION_WARN_RATIO=0.8
+AGENT_RUN_BUDGET_MAX_ITERATIONS=5
+AGENT_RUN_BUDGET_MAX_PAGES=10
+AGENT_RUN_BUDGET_MAX_SECONDS=120
 ```
 
 生产必须分离职责：
@@ -32,6 +40,8 @@ both:   AGENT_RUN_STORE_PATH=/app/data/runtime/agent_runs.sqlite3
 ```
 
 `scripts/validate_deployment.py` 会阻断 API 错误执行 Worker、Worker 未启用或共享路径不一致。Run Store 保存 query/history/answer/evidence，runtime volume 必须受 UID 10001 权限和磁盘加密保护，默认终态保留 7 天。
+
+容量判断与新 Run 插入在同一个 SQLite 写事务中完成。`active=queued+running+retry`，`waiting=queued+retry`。达到上限时新请求返回 429 与 `Retry-After`；同一 Idempotency-Key 的确认重试仍返回原 Run，不受当前容量影响。部署预算超限返回 422，调用方应缩小探索范围而不是原样重试。
 
 ## 3. API 冒烟
 
@@ -74,6 +84,9 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - `queued/retry` 是否持续增长；
 - `oldest_waiting_seconds` 是否超过正常查询等待；
 - `application_retries` 与 `lease_reclaims` 是否持续增长；
+- `admission_rejected_active_total` / `admission_rejected_waiting_total` 的增量是否异常；
+- `admission_rejected_budget_total` 是否说明客户端预算配置与部署策略不一致；
+- active/waiting utilization 是否达到 warn ratio 或 100%；
 - `attempts_total`、`retried_runs` 是否与故障/供应商错误相符；
 - `/runs/health` 是否为 `ok`，或因队列 warning 返回 `degraded`；无可用 Agent Worker 或达到 critical 阈值时会返回 503；
 - Worker 日志是否有 `agent_run_worker_started/completed/lease_lost`；
@@ -86,6 +99,14 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 ### Run 长期 queued
 
 检查 Worker 容器、`AGENT_RUN_WORKER_ENABLED=true`、共享数据库路径和文件权限。不要重新提交不同 idempotency key；原 Run 在 Worker 恢复后会被消费。
+
+### 新任务返回 429
+
+读取响应 `Retry-After`，客户端至少等待该秒数并增加 jitter；不要立即循环重试。检查 `/api/agent/runs/health` 中 active/waiting utilization、Worker capability 和 queue age。若既有任务正在正常完成，应等待自然释放；若 Worker 不健康，先恢复 Worker。临时增大容量前必须确认磁盘、模型额度、网页访问策略和查询 P95 能承受，不能只为了消除 429 修改数字。
+
+### 新任务返回预算 422
+
+检查响应中的 field/requested/allowed，并缩小 iterations/pages/seconds。部署上限是成本与外部资源策略；只有经过容量评估后才修改 env。相同 Idempotency-Key 若此前已有 Run，仍会返回原任务，不会被新策略遮蔽。
 
 ### SSE 断开或页面刷新
 
@@ -118,6 +139,8 @@ docker compose --env-file deploy/.env.production -f compose.production.yml logs 
 - BFF 不转发浏览器 X-API-Key，只转发校验后的 Idempotency-Key/Last-Event-ID；
 - Production Topology 从真实 BFF 创建 Run，断流后强杀 Worker，并由新 Worker 以 `lease_reclaim` 完成同一 run；
 - 重连只收到 `Last-Event-ID` 之后的递增事件，且整个 Run 只有一个 `done`；
+- 并发突发不能突破 active/waiting 上限，429 带整数 `Retry-After`；
+- terminal/cancel 后容量自然释放，幂等确认不被满载拒绝；
 - Python、Vitest、TypeScript、deployment validator 全绿。
 
 ## 8. 后续升级触发条件

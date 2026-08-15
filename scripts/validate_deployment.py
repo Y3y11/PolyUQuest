@@ -102,6 +102,21 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         errors.append("api must use the shared Agent Run store path")
     if worker_environment.get("AGENT_RUN_STORE_PATH") != expected_run_store:
         errors.append("worker must use the shared Agent Run store path")
+    shared_admission_settings = (
+        "AGENT_RUN_ADMISSION_ENABLED",
+        "AGENT_RUN_ADMISSION_MAX_ACTIVE",
+        "AGENT_RUN_ADMISSION_MAX_WAITING",
+        "AGENT_RUN_ADMISSION_RETRY_AFTER_SECONDS",
+        "AGENT_RUN_ADMISSION_WARN_RATIO",
+        "AGENT_RUN_BUDGET_MAX_ITERATIONS",
+        "AGENT_RUN_BUDGET_MAX_PAGES",
+        "AGENT_RUN_BUDGET_MAX_SECONDS",
+    )
+    for name in shared_admission_settings:
+        if name not in api_environment:
+            errors.append(f"api must declare shared Agent Run policy {name}")
+        elif api_environment.get(name) != worker_environment.get(name):
+            errors.append(f"api and worker must share Agent Run policy {name}")
 
     frontend_environment = frontend.get("environment", {})
     if frontend_environment.get("BACKEND_API_URL") != "http://api:8000/api":

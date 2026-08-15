@@ -21,6 +21,11 @@ from agent_rag.agent.schemas import (
     AgentRunSubmission,
 )
 from agent_rag.config import settings
+from agent_rag.runs.admission import (
+    AgentRunAdmissionPolicy,
+    AgentRunAdmissionRejectedError,
+    AgentRunBudgetRejectedError,
+)
 from agent_rag.runs.models import AgentRunEvent, AgentRunRecord
 from agent_rag.runs.store import (
     IdempotencyConflictError,
@@ -100,6 +105,17 @@ async def create_agent_run(
         )
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AgentRunAdmissionRejectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=exc.detail(),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
+    except AgentRunBudgetRejectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.detail(),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     base = f"/api/agent/runs/{run.run_id}"
@@ -146,6 +162,11 @@ async def get_agent_run_health(request: Request) -> dict[str, Any] | JSONRespons
     standalone_available = healthy_standalone is not None
     worker_available = in_process_available or standalone_available
     oldest_waiting = float(stats["oldest_waiting_seconds"])
+    admission = AgentRunAdmissionPolicy.from_settings(settings)
+    active = int(stats["active"])
+    waiting = int(stats["waiting"])
+    active_utilization = active / admission.max_active
+    waiting_utilization = waiting / admission.max_waiting
     reasons: list[str] = []
     health_status = "ok"
     if not worker_available:
@@ -158,6 +179,21 @@ async def get_agent_run_health(request: Request) -> dict[str, Any] | JSONRespons
         if health_status == "ok":
             health_status = "degraded"
         reasons.append("queue_wait_warning")
+    if admission.enabled:
+        if active >= admission.max_active:
+            health_status = "critical"
+            reasons.append("active_capacity_full")
+        elif active_utilization >= admission.warn_ratio:
+            if health_status == "ok":
+                health_status = "degraded"
+            reasons.append("active_capacity_warning")
+        if waiting >= admission.max_waiting:
+            health_status = "critical"
+            reasons.append("waiting_capacity_full")
+        elif waiting_utilization >= admission.warn_ratio:
+            if health_status == "ok":
+                health_status = "degraded"
+            reasons.append("waiting_capacity_warning")
     payload: dict[str, Any] = {
         "status": health_status,
         "worker_available": worker_available,
@@ -176,6 +212,14 @@ async def get_agent_run_health(request: Request) -> dict[str, Any] | JSONRespons
         "reasons": reasons,
         "queue_warn_seconds": settings.agent_run_queue_warn_seconds,
         "queue_critical_seconds": settings.agent_run_queue_critical_seconds,
+        "admission": {
+            "enabled": admission.enabled,
+            "max_active": admission.max_active,
+            "max_waiting": admission.max_waiting,
+            "warn_ratio": admission.warn_ratio,
+            "active_utilization": round(active_utilization, 4),
+            "waiting_utilization": round(waiting_utilization, 4),
+        },
         "stats": stats,
     }
     if health_status == "critical":

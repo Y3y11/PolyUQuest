@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from agent_rag.config import agent_config
+from agent_rag.limits import AGENT_BUDGET_LIMITS
 from agent_rag.tools.schemas import EvidenceBlock, SearchMode, ToolTraceStep
 
 _CONTROLLER = agent_config.get("controller", {})
@@ -19,12 +20,24 @@ class AgentTurn(BaseModel):
 
 class AgentBudget(BaseModel):
     max_iterations: int = Field(
-        default=int(_CONTROLLER.get("max_iterations", 3)), ge=1, le=8
+        default=int(_CONTROLLER.get("max_iterations", 3)),
+        ge=1,
+        le=AGENT_BUDGET_LIMITS["max_iterations"],
     )
-    max_pages: int = Field(default=int(_CONTROLLER.get("max_pages", 5)), ge=0, le=20)
-    max_depth: int = Field(default=int(_CONTROLLER.get("max_depth", 2)), ge=1, le=4)
+    max_pages: int = Field(
+        default=int(_CONTROLLER.get("max_pages", 5)),
+        ge=0,
+        le=AGENT_BUDGET_LIMITS["max_pages"],
+    )
+    max_depth: int = Field(
+        default=int(_CONTROLLER.get("max_depth", 2)),
+        ge=1,
+        le=AGENT_BUDGET_LIMITS["max_depth"],
+    )
     max_seconds: int = Field(
-        default=int(_CONTROLLER.get("max_seconds", 90)), ge=5, le=300
+        default=int(_CONTROLLER.get("max_seconds", 90)),
+        ge=5,
+        le=AGENT_BUDGET_LIMITS["max_seconds"],
     )
 
 

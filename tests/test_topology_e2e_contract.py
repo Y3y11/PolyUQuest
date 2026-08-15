@@ -313,6 +313,10 @@ def test_compose_encodes_split_process_and_claim_takeover() -> None:
     assert services["api"]["environment"]["AGENT_RUN_WORKER_ENABLED"] == "false"
     assert services["worker"]["environment"]["INDEX_WORKER_ENABLED"] == "true"
     assert services["worker"]["environment"]["AGENT_RUN_WORKER_ENABLED"] == "true"
+    assert services["api"]["environment"]["AGENT_RUN_ADMISSION_ENABLED"] == "true"
+    assert services["api"]["environment"]["AGENT_RUN_ADMISSION_MAX_ACTIVE"] == "100"
+    assert services["api"]["environment"]["AGENT_RUN_ADMISSION_MAX_WAITING"] == "80"
+    assert services["worker"]["environment"]["AGENT_RUN_ADMISSION_MAX_ACTIVE"] == "100"
     assert services["worker"]["environment"]["AGENT_RUN_LEASE_SECONDS"] == "2"
     assert (
         services["worker"]["environment"]["BUSINESS_E2E_CLAIM_DELAY_SECONDS"]

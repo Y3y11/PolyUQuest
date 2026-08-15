@@ -171,8 +171,8 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/agent/runs/{run_id}` | Read Run status and terminal result |
 | `GET`  | `/api/agent/runs/{run_id}/events` | Replayable SSE with `Last-Event-ID` |
 | `POST` | `/api/agent/runs/{run_id}/cancel` | Persist an explicit cancellation request |
-| `GET`  | `/api/agent/runs/stats` | Queue, attempt, retry, lease-reclaim and age metrics |
-| `GET`  | `/api/agent/runs/health` | Operator health for Agent Worker availability and backlog |
+| `GET`  | `/api/agent/runs/stats` | Queue, admission, attempt, retry, lease-reclaim and age metrics |
+| `GET`  | `/api/agent/runs/health` | Operator health for Worker availability, backlog and capacity |
 | `GET`  | `/api/graph/stats` | Knowledge-graph node counts |
 | `GET`  | `/api/indexing/jobs` | Async indexing jobs and status |
 | `GET`  | `/api/indexing/quality/decisions` | Audited page-quality decisions |

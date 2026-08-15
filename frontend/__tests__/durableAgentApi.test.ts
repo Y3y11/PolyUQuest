@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ApiError,
+  createAgentRunAPI,
   parseSSE,
   streamAgentRunEventsAPI,
   type AgentQueryResponse,
@@ -37,6 +39,42 @@ function completedResponse(): AgentQueryResponse {
 }
 
 describe("durable Agent SSE client", () => {
+  it("surfaces admission status and Retry-After to the UI", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          {
+            error: "backend_rejected_request",
+            detail: {
+              code: "agent_run_capacity_exceeded",
+              reason: "active_limit",
+            },
+          },
+          { status: 429, headers: { "Retry-After": "7" } }
+        )
+      )
+    );
+
+    let observed: unknown = null;
+    try {
+      await createAgentRunAPI(
+        "How do I apply?",
+        [],
+        "browser-capacity-000001"
+      );
+    } catch (error) {
+      observed = error;
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(observed).toBeInstanceOf(ApiError);
+    expect((observed as ApiError).status).toBe(429);
+    expect((observed as ApiError).code).toBe("agent_run_capacity_exceeded");
+    expect((observed as ApiError).retryAfterSeconds).toBe(7);
+  });
+
   it("parses event identifiers, CRLF and keepalives", () => {
     const events = [...parseSSE(": keepalive\r\n\r\nid: 4\r\nevent: action\r\ndata: {\"ok\":true}\r\n\r\n")];
     expect(events).toEqual([
