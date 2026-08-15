@@ -1,0 +1,76 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 48
+  transform/privacy:
+    error_mode: propagate
+    trace_statements:
+      - 'keep_keys(resource.attributes, ["service.name"])'
+      - 'keep_keys(scope.attributes, [])'
+      - 'set(span.name, "runtime.unknown") where IsMatch(span.name, "^(agent\\.run\\.(submit|execute)|agent\\.stage|llm\\.chat|knowledge\\.index\\.execute|bff\\.request|runtime\\.unknown)$") == false'
+      - 'set(span.status.message, "")'
+      - 'set(spanevent.name, "event")'
+      - 'keep_keys(spanevent.attributes, [])'
+  redaction/privacy:
+    allow_all_keys: false
+    allowed_keys:
+      - attempt
+      - status
+      - stage
+      - route.mode
+      - route.source
+      - route.confidence
+      - cache.hit
+      - iteration
+      - evidence.count
+      - frontier.count
+      - candidate.count
+      - relevant_block.count
+      - webpage.count
+      - block.count
+      - link.count
+      - token.input
+      - token.output
+      - queue.wait_ms
+      - error.type
+    summary: silent
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+    send_batch_max_size: 512
+
+exporters:
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, redaction/privacy, batch]
+      exporters: [otlphttp/tempo]

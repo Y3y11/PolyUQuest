@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import load_dotenv
@@ -112,6 +113,11 @@ class Settings(BaseSettings):
     otel_traces_sampler_arg: float = 0.1
     otel_exporter_otlp_endpoint: str = ""
     otel_exporter_otlp_headers: str = ""
+    trace_backend_enabled: bool = False
+    trace_backend_url: str = "http://tempo:3200"
+    trace_backend_timeout_seconds: float = 3.0
+    trace_backend_max_response_bytes: int = 2_097_152
+    trace_backend_max_spans: int = 500
     index_worker_enabled: bool = True
     index_worker_poll_seconds: float = 0.5
     index_worker_lease_seconds: int = 120
@@ -278,6 +284,30 @@ class Settings(BaseSettings):
             raise ValueError(
                 "OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_TRACING_MODE=otlp"
             )
+        trace_backend = urlsplit(self.trace_backend_url)
+        if (
+            trace_backend.scheme not in {"http", "https"}
+            or not trace_backend.hostname
+            or trace_backend.username is not None
+            or trace_backend.password is not None
+            or trace_backend.query
+            or trace_backend.fragment
+            or trace_backend.path not in {"", "/"}
+        ):
+            raise ValueError(
+                "TRACE_BACKEND_URL must be an http(s) origin without credentials, "
+                "path, query, or fragment"
+            )
+        if not 0.1 <= self.trace_backend_timeout_seconds <= 30:
+            raise ValueError(
+                "TRACE_BACKEND_TIMEOUT_SECONDS must be between 0.1 and 30"
+            )
+        if not 1024 <= self.trace_backend_max_response_bytes <= 10_485_760:
+            raise ValueError(
+                "TRACE_BACKEND_MAX_RESPONSE_BYTES must be between 1024 and 10485760"
+            )
+        if not 1 <= self.trace_backend_max_spans <= 5000:
+            raise ValueError("TRACE_BACKEND_MAX_SPANS must be between 1 and 5000")
         if self.index_worker_lease_seconds <= 0:
             raise ValueError("INDEX_WORKER_LEASE_SECONDS must be positive")
         if self.index_job_max_attempts <= 0:

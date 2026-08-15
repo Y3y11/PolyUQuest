@@ -1,0 +1,46 @@
+services:
+  tempo:
+    image: grafana/tempo:2.10.7
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-target=all"]
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    volumes:
+      - ./deploy/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tracing_tempo_data:/var/tempo
+    ports:
+      - "127.0.0.1:${TRACING_E2E_TEMPO_PORT:-13200}:3200"
+    networks: [tracing]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 0.5
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:${TRACING_E2E_OTLP_PORT:-14318}:4318"
+      - "127.0.0.1:${TRACING_E2E_HEALTH_PORT:-13133}:13133"
+    networks: [tracing]
+    depends_on: [tempo]
+
+networks:
+  tracing:
+    internal: true
+
+volumes:
+  tracing_tempo_data:

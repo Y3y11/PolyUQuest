@@ -56,6 +56,7 @@ agent-rag-e2e-fixture = "agent_rag.e2e.fixture_app:start"
 agent-rag-topology-e2e = "agent_rag.e2e.topology_driver:main"
 agent-rag-worker-health = "agent_rag.workers.status:health_main"
 agent-rag-capacity-benchmark = "agent_rag.capacity_cli:main"
+agent-rag-tracing-e2e = "agent_rag.e2e.tracing_driver:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_rag"]

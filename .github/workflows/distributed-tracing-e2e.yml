@@ -1,0 +1,121 @@
+name: Distributed Tracing E2E Gate
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/distributed-tracing-e2e.yml"
+      - "compose.tracing-e2e.yml"
+      - "compose.production.yml"
+      - "deploy/observability/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/agent_rag/tracing/**"
+      - "src/agent_rag/e2e/tracing_driver.py"
+      - "src/agent_rag/api/routes/telemetry_router.py"
+      - "src/agent_rag/config.py"
+      - "tests/test_trace_backend.py"
+      - "tests/test_distributed_tracing.py"
+      - "scripts/validate_deployment.py"
+      - "scripts/validate_supply_chain.py"
+      - "configs/supply_chain.json"
+  pull_request:
+    paths:
+      - ".github/workflows/distributed-tracing-e2e.yml"
+      - "compose.tracing-e2e.yml"
+      - "compose.production.yml"
+      - "deploy/observability/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/agent_rag/tracing/**"
+      - "src/agent_rag/e2e/tracing_driver.py"
+      - "src/agent_rag/api/routes/telemetry_router.py"
+      - "src/agent_rag/config.py"
+      - "tests/test_trace_backend.py"
+      - "tests/test_distributed_tracing.py"
+      - "scripts/validate_deployment.py"
+      - "scripts/validate_supply_chain.py"
+      - "configs/supply_chain.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distributed-tracing-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collector-tempo-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src
+      UV_CACHE_DIR: .uv-cache
+      TRACING_E2E_PROJECT: polyuquest-tracing-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Validate code and deployment contracts
+        run: |
+          uv run --no-sync ruff check \
+            src/agent_rag/tracing \
+            src/agent_rag/e2e/tracing_driver.py \
+            src/agent_rag/api/routes/telemetry_router.py \
+            tests/test_trace_backend.py \
+            tests/test_distributed_tracing.py
+          uv run --no-sync pytest \
+            tests/test_trace_backend.py \
+            tests/test_distributed_tracing.py -q
+          uv run --no-sync python scripts/validate_deployment.py
+          uv run --no-sync python scripts/validate_supply_chain.py validate
+          docker compose -f compose.tracing-e2e.yml config --quiet
+
+      - name: Start isolated Collector and Tempo
+        run: >-
+          docker compose -f compose.tracing-e2e.yml
+          -p "$TRACING_E2E_PROJECT" up -d --pull always
+
+      - name: Execute real OTLP privacy and query gate
+        run: >-
+          uv run --no-sync agent-rag-tracing-e2e
+          --output data/runtime/tracing-e2e/report.json
+
+      - name: Collect tracing logs
+        if: always()
+        run: |
+          mkdir -p data/runtime/tracing-e2e
+          docker compose -f compose.tracing-e2e.yml -p "$TRACING_E2E_PROJECT" \
+            logs --no-color > data/runtime/tracing-e2e/compose.log 2>&1 || true
+
+      - name: Remove isolated tracing project
+        if: always()
+        run: >-
+          docker compose -f compose.tracing-e2e.yml
+          -p "$TRACING_E2E_PROJECT" down -v --remove-orphans
+
+      - name: Upload tracing evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distributed-tracing-e2e-${{ github.sha }}
+          path: |
+            data/runtime/tracing-e2e/report.json
+            data/runtime/tracing-e2e/compose.log
+          if-no-files-found: error
+          retention-days: 14

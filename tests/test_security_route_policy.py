@@ -60,6 +60,10 @@ class SecurityRoutePolicyTests(unittest.TestCase):
         self.assertIn(Role.reader, _roles(routes["/api/graph/data"]))
         self.assertIn(Role.operator, _roles(routes["/api/indexing/jobs"]))
         self.assertIn(Role.operator, _roles(routes["/api/telemetry/runs"]))
+        self.assertIn(
+            Role.operator,
+            _roles(routes["/api/telemetry/traces/{trace_id}"]),
+        )
 
 
 if __name__ == "__main__":

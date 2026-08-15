@@ -28,7 +28,7 @@ from agent_rag.config import settings
 _TRACEPARENT = re.compile(
     r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$"
 )
-_ALLOWED_ATTRIBUTES = frozenset(
+SAFE_TRACE_ATTRIBUTES = frozenset(
     {
         "attempt",
         "status",
@@ -72,7 +72,7 @@ def trace_id_from_traceparent(value: str | None) -> str | None:
 def _safe_attributes(values: Mapping[str, Any] | None) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in (values or {}).items():
-        if key not in _ALLOWED_ATTRIBUTES:
+        if key not in SAFE_TRACE_ATTRIBUTES:
             continue
         if isinstance(value, bool | int | float) or isinstance(value, str) and len(value) <= 64:
             safe[key] = value

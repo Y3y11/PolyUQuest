@@ -2,17 +2,82 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from agent_rag.config import observability_config
 from agent_rag.security.auth import require_role
 from agent_rag.security.models import Role
 from agent_rag.telemetry.models import RunTelemetry, RunTelemetryDetail
 from agent_rag.telemetry.store import telemetry_store
+from agent_rag.tracing.backend import (
+    TempoTraceClient,
+    TraceBackendDisabledError,
+    TraceBackendInvalidResponseError,
+    TraceBackendResponseTooLargeError,
+    TraceBackendUnavailableError,
+    TraceNotFoundError,
+    TraceWaterfall,
+    tempo_trace_client,
+)
 
 router = APIRouter(dependencies=[Depends(require_role(Role.operator))])
+
+
+def _get_trace_client() -> TempoTraceClient:
+    return tempo_trace_client
+
+
+@router.get(
+    "/telemetry/traces/{trace_id}",
+    response_model=TraceWaterfall,
+)
+async def get_distributed_trace(
+    trace_id: str,
+    response: Response,
+    client: Annotated[TempoTraceClient, Depends(_get_trace_client)],
+) -> TraceWaterfall:
+    response.headers["Cache-Control"] = "no-store"
+    no_store = {"Cache-Control": "no-store"}
+    try:
+        return await client.get(trace_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Trace not found",
+            headers=no_store,
+        ) from exc
+    except TraceNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Trace not found",
+            headers=no_store,
+        ) from exc
+    except TraceBackendDisabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="trace_backend_disabled",
+            headers=no_store,
+        ) from exc
+    except TraceBackendUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="trace_backend_unavailable",
+            headers=no_store,
+        ) from exc
+    except TraceBackendResponseTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="trace_backend_response_too_large",
+            headers=no_store,
+        ) from exc
+    except TraceBackendInvalidResponseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="trace_backend_invalid_response",
+            headers=no_store,
+        ) from exc
 
 
 @router.get("/telemetry/runs", response_model=list[RunTelemetry])

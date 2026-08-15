@@ -122,6 +122,7 @@ refresh or transient disconnect does not restart the retrieval task. See
 | Query-driven Agent budgets / evidence / fetch limits | `configs/agent.yaml` |
 | Deterministic business E2E contract | `configs/business_e2e.yaml` |
 | Runtime telemetry retention and SLO targets | `configs/observability.yaml` |
+| OTLP export and exact-ID trace backend | `.env` plus `deploy/observability/` |
 | API authentication, RBAC keys, security audit retention | `.env` |
 | Entity alias dictionary | `configs/aliases.yaml` |
 | Connector site identity / seed labels / URL policy | `configs/crawl.yaml` |
@@ -186,6 +187,7 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/telemetry/runs/{run_id}` | Run detail with stage and LLM usage spans |
 | `GET`  | `/api/telemetry/stats` | P50/P95/P99 latency, success and token aggregates |
 | `GET`  | `/api/telemetry/slo` | Configured targets with pass/fail/insufficient-data status |
+| `GET`  | `/api/telemetry/traces/{trace_id}` | Operator-only privacy-safe distributed trace waterfall |
 | `GET`  | `/api/security/whoami` | Authenticated workload identity and role |
 | `GET`  | `/api/security/audit` | Admin-only body-free security audit |
 | `GET`  | `/api/security/audit/stats` | Authorization outcome and dropped-write counts |
@@ -195,6 +197,12 @@ Once the backend is running, the main routes (all under `/api`) are:
 | `GET`  | `/api/health` | Backward-compatible dependency health |
 
 Full interactive documentation is at `http://localhost:8000/docs`.
+
+Distributed tracing is disabled by default. The optional production
+`observability` profile runs a private OpenTelemetry Collector and single-node
+Tempo backend; operator queries receive only a bounded, privacy-safe waterfall,
+never the raw Tempo payload or arbitrary TraceQL. See
+[`docs/TRACE_BACKEND_OPERATIONALIZATION_RUNBOOK.md`](docs/TRACE_BACKEND_OPERATIONALIZATION_RUNBOOK.md).
 
 The Agent endpoint preserves the original retrieval API. Web exploration is
 restricted to the crawler domain allowlist. Fetched pages are written to the

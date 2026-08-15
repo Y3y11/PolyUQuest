@@ -22,7 +22,17 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
     services = payload.get("services", {})
     errors: list[str] = []
 
-    required = {"api", "worker", "frontend", "neo4j", "qdrant", "backup", "restore"}
+    required = {
+        "api",
+        "worker",
+        "frontend",
+        "neo4j",
+        "qdrant",
+        "backup",
+        "restore",
+        "otel-collector",
+        "tempo",
+    }
     missing = sorted(required - set(services))
     if missing:
         errors.append(f"missing services: {', '.join(missing)}")
@@ -32,7 +42,7 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
         if image.endswith(":latest") or ":latest@" in image:
             errors.append(f"{name}: floating latest image is forbidden")
 
-    for database in ("neo4j", "qdrant"):
+    for database in ("neo4j", "qdrant", "otel-collector", "tempo"):
         if services.get(database, {}).get("ports"):
             errors.append(f"{database}: production database ports must not be published")
 
@@ -52,6 +62,13 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
     if frontend_networks != {"frontend", "backend"}:
         errors.append("frontend: must join public frontend and private backend networks")
 
+    for name in ("otel-collector", "tempo"):
+        service = services.get(name, {})
+        if set(_list(service.get("networks"))) != {"backend"}:
+            errors.append(f"{name}: must remain isolated on backend only")
+        if service.get("profiles") != ["observability"]:
+            errors.append(f"{name}: must be opt-in through the observability profile")
+
     for name in ("api", "worker", "frontend"):
         service = services.get(name, {})
         if service.get("user") != "10001:10001":
@@ -64,6 +81,19 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
             errors.append(f"{name}: no-new-privileges is required")
         if not service.get("stop_grace_period"):
             errors.append(f"{name}: stop_grace_period is required")
+
+    for name in ("otel-collector", "tempo"):
+        service = services.get(name, {})
+        if service.get("user") != "10001:10001":
+            errors.append(f"{name}: must run as uid/gid 10001")
+        if service.get("read_only") is not True:
+            errors.append(f"{name}: root filesystem must be read-only")
+        if "ALL" not in _list(service.get("cap_drop")):
+            errors.append(f"{name}: Linux capabilities must be dropped")
+        if "no-new-privileges:true" not in _list(service.get("security_opt")):
+            errors.append(f"{name}: no-new-privileges is required")
+        if not service.get("mem_limit") or not service.get("cpus"):
+            errors.append(f"{name}: CPU and memory limits are required")
 
     api = services.get("api", {})
     worker = services.get("worker", {})
@@ -126,6 +156,34 @@ def validate_deployment(root: Path = ROOT) -> list[str]:
     for name in metrics_settings:
         if name not in api_environment:
             errors.append(f"api must declare runtime metrics policy {name}")
+    trace_backend_settings = (
+        "TRACE_BACKEND_ENABLED",
+        "TRACE_BACKEND_URL",
+        "TRACE_BACKEND_TIMEOUT_SECONDS",
+        "TRACE_BACKEND_MAX_RESPONSE_BYTES",
+        "TRACE_BACKEND_MAX_SPANS",
+    )
+    for name in trace_backend_settings:
+        if name not in api_environment:
+            errors.append(f"api must declare trace backend policy {name}")
+    if api_environment.get("TRACE_BACKEND_URL") != (
+        "${TRACE_BACKEND_URL:-http://tempo:3200}"
+    ):
+        errors.append("api trace backend must default to the private Tempo service")
+
+    collector = services.get("otel-collector", {})
+    tempo = services.get("tempo", {})
+    if collector.get("image") != "otel/opentelemetry-collector-contrib:0.158.0":
+        errors.append("otel-collector image must use the reviewed 0.158.0 release")
+    if tempo.get("image") != "grafana/tempo:2.10.7":
+        errors.append("tempo image must use the reviewed 2.10.7 release")
+    if collector.get("command") != ["--config=/etc/otelcol-contrib/config.yaml"]:
+        errors.append("otel-collector must load the repository privacy configuration")
+    if tempo.get("command") != [
+        "-config.file=/etc/tempo/tempo.yaml",
+        "-target=all",
+    ]:
+        errors.append("tempo must run the reviewed monolithic configuration")
 
     frontend_environment = frontend.get("environment", {})
     if frontend_environment.get("BACKEND_API_URL") != "http://api:8000/api":

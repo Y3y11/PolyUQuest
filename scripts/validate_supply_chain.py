@@ -150,6 +150,13 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
         detail = exc.args[0] if exc.args else "profiles"
         errors.append(f"invalid profile policy: {detail}")
 
+    expected_observability = {
+        "collector": "otel/opentelemetry-collector-contrib:0.158.0",
+        "tempo": "grafana/tempo:2.10.7",
+    }
+    if policy.get("observability_images") != expected_observability:
+        errors.append("observability_images must match the reviewed Collector/Tempo releases")
+
     return errors
 
 
@@ -281,6 +288,20 @@ def validate_dependency_profiles(root: Path) -> list[str]:
     return errors
 
 
+def validate_observability_images(root: Path, policy: dict[str, Any]) -> list[str]:
+    compose_path = root / "compose.production.yml"
+    if not compose_path.is_file():
+        return ["compose.production.yml is missing"]
+    compose = compose_path.read_text(encoding="utf-8")
+    images = policy.get("observability_images", {})
+    errors: list[str] = []
+    selected_images = images.items() if isinstance(images, dict) else ()
+    for name, image in selected_images:
+        if f"image: {image}" not in compose:
+            errors.append(f"compose.production.yml: reviewed {name} image is missing")
+    return errors
+
+
 def validate_repository(root: Path) -> list[str]:
     try:
         policy = load_policy(root)
@@ -291,6 +312,7 @@ def validate_repository(root: Path) -> list[str]:
         *validate_workflows(root, policy),
         *validate_dockerfiles(root, policy),
         *validate_dependency_profiles(root),
+        *validate_observability_images(root, policy),
     ]
 
 
